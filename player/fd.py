@@ -5,60 +5,13 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtCore import Qt, QUrl, QTimer, QPoint, QEvent, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QAction, QColor, QPalette, QPainter, QPainterPath, QBrush, QPen, QFont
+from PySide6.QtGui import QAction, QColor, QPalette, QPainter, QPainterPath, QBrush, QPen
 
 
 class GlassFrame(QFrame):
-    def __init__(self, parent=None, radius=15):
-        super().__init__(parent)
-        self.radius = radius
-        self.setAttribute(Qt.WA_TranslucentBackground)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        # Create rounded rectangle path
-        path = QPainterPath()
-        path.addRoundedRect(self.rect(), self.radius, self.radius)
-
-        # Apply glass effect
-        painter.setClipPath(path)
-        painter.fillPath(path, QColor(30, 30, 46, 220))
-
-        # Draw border
-        pen = QPen(QColor(108, 112, 134, 180), 2)
-        painter.setPen(pen)
-        painter.drawPath(path)
-
-
-class GlassMenu(QMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet("""
-            QMenu {
-                background-color: transparent;
-                padding: 10px;
-            }
-            QMenu::item {
-                background-color: rgba(49, 50, 68, 0.8);
-                color: #cdd6f4;
-                border: 1px solid rgba(108, 112, 134, 0.4);
-                border-radius: 8px;
-                padding: 8px 16px;
-                margin: 4px 0;
-                font-size: 14px;
-            }
-            QMenu::item:selected {
-                background-color: rgba(69, 71, 90, 0.9);
-                border: 1px solid rgba(180, 190, 254, 0.6);
-            }
-            QMenu::item:pressed {
-                background-color: rgba(180, 190, 254, 0.4);
-            }
-        """)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -70,14 +23,12 @@ class GlassMenu(QMenu):
 
         # Apply glass effect
         painter.setClipPath(path)
-        painter.fillPath(path, QColor(30, 30, 46, 220))
+        painter.fillPath(path, QColor(30, 30, 46, 200))
 
         # Draw border
         pen = QPen(QColor(108, 112, 134, 180), 2)
         painter.setPen(pen)
         painter.drawPath(path)
-
-        super().paintEvent(event)
 
 
 class MediaPlayer(QMainWindow):
@@ -106,7 +57,7 @@ class MediaPlayer(QMainWindow):
         main_layout.addWidget(self.video_widget, 1)
 
         # Create overlay frame for controls
-        self.overlay_frame = GlassFrame(radius=12)
+        self.overlay_frame = GlassFrame()
         self.overlay_frame.setObjectName("OverlayFrame")
         self.overlay_frame.setFixedHeight(120)
 
@@ -149,7 +100,7 @@ class MediaPlayer(QMainWindow):
         self.pause_button = self.create_glass_button("Pause", "pause")
         self.stop_button = self.create_glass_button("Stop", "stop")
         self.transparency_button = self.create_glass_button("Transparency", "opacity")
-        self.overlay_button = self.create_glass_button("Menu", "menu")
+        self.overlay_button = self.create_glass_button("Overlay", "layers")
 
         control_layout.addWidget(self.open_button)
         control_layout.addWidget(self.play_button)
@@ -172,6 +123,7 @@ class MediaPlayer(QMainWindow):
 
         # Settings
         self.is_transparent = False
+        self.overlay_active = False
         self.controls_visible = True
 
         # Inactivity timer for auto-hiding controls
@@ -207,7 +159,7 @@ class MediaPlayer(QMainWindow):
         button = QPushButton(text)
         button.setObjectName(icon_name)
         button.setMinimumHeight(40)
-        button.setMinimumWidth(80)
+        button.setMinimumWidth(100)
         button.setStyleSheet("""
             QPushButton {
                 background-color: rgba(49, 50, 68, 0.8);
@@ -216,6 +168,7 @@ class MediaPlayer(QMainWindow):
                 border-radius: 10px;
                 padding: 8px 16px;
                 font-size: 14px;
+                min-width: 80px;
             }
             QPushButton:hover {
                 background-color: rgba(69, 71, 90, 0.9);
@@ -233,7 +186,7 @@ class MediaPlayer(QMainWindow):
         self.pause_button.clicked.connect(self.media_player.pause)
         self.stop_button.clicked.connect(self.media_player.stop)
         self.transparency_button.clicked.connect(self.toggle_transparency)
-        self.overlay_button.clicked.connect(self.show_context_menu)
+        self.overlay_button.clicked.connect(self.toggle_overlay)
 
         self.media_player.positionChanged.connect(self.update_position)
         self.media_player.durationChanged.connect(self.update_duration)
@@ -245,44 +198,28 @@ class MediaPlayer(QMainWindow):
         self.central_widget.installEventFilter(self)
 
     def create_context_menu(self):
-        self.context_menu = GlassMenu(self)
-        self.context_menu.setFont(QFont("Arial", 11))
+        self.context_menu = QMenu(self)
 
         transparency_action = QAction("Toggle Transparency", self)
         transparency_action.triggered.connect(self.toggle_transparency)
 
+        overlay_action = QAction("Toggle Video Overlay", self)
+        overlay_action.triggered.connect(self.toggle_overlay)
+
         always_on_top = QAction("Always on Top", self, checkable=True)
         always_on_top.triggered.connect(self.toggle_always_on_top)
 
-        video_info = QAction("Video Information", self)
-        video_info.triggered.connect(self.show_video_info)
-
-        playback_speed = QAction("Playback Speed", self)
-        playback_speed.triggered.connect(self.adjust_playback_speed)
-
-        audio_settings = QAction("Audio Settings", self)
-        audio_settings.triggered.connect(self.adjust_audio_settings)
-
-        exit_action = QAction("Exit Player", self)
+        exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
 
         self.context_menu.addAction(transparency_action)
-        self.context_menu.addAction(always_on_top)
+        self.context_menu.addAction(overlay_action)
         self.context_menu.addSeparator()
-        self.context_menu.addAction(video_info)
-        self.context_menu.addAction(playback_speed)
-        self.context_menu.addAction(audio_settings)
+        self.context_menu.addAction(always_on_top)
         self.context_menu.addSeparator()
         self.context_menu.addAction(exit_action)
 
-    def show_context_menu(self):
-        # Position menu above the button
-        pos = self.overlay_button.mapToGlobal(QPoint(0, 0))
-        pos.setY(pos.y() - self.context_menu.sizeHint().height())
-        self.context_menu.exec(pos)
-
     def contextMenuEvent(self, event):
-        # Show menu at mouse position
         self.context_menu.exec(event.globalPos())
 
     def eventFilter(self, source, event):
@@ -315,6 +252,28 @@ class MediaPlayer(QMainWindow):
         else:
             self.setWindowOpacity(1.0)
             self.transparency_button.setStyleSheet("")
+
+    def toggle_overlay(self):
+        self.overlay_active = not self.overlay_active
+        if self.overlay_active:
+            self.overlay_frame.setStyleSheet("""
+                background-color: rgba(30, 30, 46, 0.85);
+                border: 2px solid rgba(108, 112, 134, 0.6);
+                border-radius: 12px;
+            """)
+            self.video_widget.setStyleSheet("""
+                background-color: black; 
+                border: 4px solid rgba(203, 166, 247, 0.7);
+                border-radius: 15px;
+            """)
+            self.overlay_button.setStyleSheet("background-color: rgba(203, 166, 247, 0.7);")
+        else:
+            self.video_widget.setStyleSheet("""
+                background-color: black; 
+                border-radius: 15px;
+            """)
+            self.overlay_frame.setStyleSheet("")
+            self.overlay_button.setStyleSheet("")
 
     def toggle_always_on_top(self, checked):
         if checked:
@@ -385,56 +344,6 @@ class MediaPlayer(QMainWindow):
             delta = QPoint(event.globalPosition().toPoint() - self.old_pos)
             self.move(self.x() + delta.x(), self.y() + delta.y())
             self.old_pos = event.globalPosition().toPoint()
-
-    def show_video_info(self):
-        source = self.media_player.source().fileName()
-        duration = self.media_player.duration() // 1000
-        minutes, seconds = divmod(duration, 60)
-
-        info = f"File: {source.split('/')[-1]}\nDuration: {minutes}:{seconds:02d}"
-        self.show_overlay_message(info)
-
-    def adjust_playback_speed(self):
-        self.show_overlay_message("Playback Speed Adjustment")
-
-    def adjust_audio_settings(self):
-        self.show_overlay_message("Audio Settings Panel")
-
-    def show_overlay_message(self, text):
-        # Create overlay message
-        self.msg_label = QLabel(text, self.video_widget)
-        self.msg_label.setAlignment(Qt.AlignCenter)
-        self.msg_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(30, 30, 46, 0.85);
-                color: #cdd6f4;
-                border: 2px solid rgba(203, 166, 247, 0.7);
-                border-radius: 15px;
-                padding: 20px;
-                font-size: 18px;
-                font-weight: bold;
-            }
-        """)
-        self.msg_label.setGeometry(
-            self.video_widget.width() // 4,
-            self.video_widget.height() // 3,
-            self.video_widget.width() // 2,
-            100
-        )
-        self.msg_label.show()
-
-        # Create animation for fade out
-        self.msg_opacity = QGraphicsOpacityEffect(self.msg_label)
-        self.msg_label.setGraphicsEffect(self.msg_opacity)
-        self.msg_opacity.setOpacity(1.0)
-
-        fade_animation = QPropertyAnimation(self.msg_opacity, b"opacity")
-        fade_animation.setDuration(2000)
-        fade_animation.setStartValue(1.0)
-        fade_animation.setEndValue(0.0)
-        fade_animation.setEasingCurve(QEasingCurve.OutCubic)
-        fade_animation.finished.connect(self.msg_label.deleteLater)
-        fade_animation.start()
 
 
 if __name__ == "__main__":
