@@ -1,0 +1,10 @@
+{
+    "sidebar_position": 2,
+    "theme": "dark",
+    "volume": 75,
+    "bars_count": 48,
+    "color_scheme": "sunset",
+    "smooth_animation": true,
+    "show_cover": true,
+    "spectrum": true
+}

@@ -1,193 +1,238 @@
 import sys
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QLabel, QSizePolicy
-)
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+import os
+from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QStyle
+from PySide6.QtCore import Qt, QSize, QSettings
+from PySide6.QtGui import QIcon, QPalette, QColor
 
-from gui.sidebar import Sidebar, TriangleButton
-from gui.recommendation import RecommendationCard
+from gui_base.sidebar import Sidebar
+from gui_base.home_page import HomePage
+from gui_base.library_page import LibraryPage
+from gui_base.settings_page import SettingsPage
+
+SETTINGS_ORG = "PlayerV"
+SETTINGS_APP = "Player"
 
 
-class RecommendationsPage(QMainWindow):
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Recommendations")
-        self.setMinimumSize(1200, 800)
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
-        # Центральный виджет
-        central_widget = QWidget()
-        central_widget.setObjectName("centralWidget")
-        self.setCentralWidget(central_widget)
+        self.setWindowTitle("PlayerV")
+        self.setMinimumSize(QSize(900, 600))
 
-        # Главный лейаут (горизонтальный)
-        main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        central_widget.setLayout(main_layout)
+        # Load window state
+        self.restoreGeometry(self.settings.value("window_geometry", b""))
 
-        # Левая панель (15%)
-        self.sidebar = Sidebar()
-        main_layout.addWidget(self.sidebar, 15)  # 15% ширины
+        # Initialize UI
+        self.init_sidebar()
+        self.init_pages()
 
-        # Треугольная кнопка
-        self.triangle_button = TriangleButton()
-        main_layout.addWidget(self.triangle_button, 0)  # Фиксированная ширина
+        # Apply initial settings
+        self.apply_settings()
 
-        # Контентная область (85%)
-        content_widget = QWidget()
-        content_widget.setObjectName("contentWidget")
-        content_layout = QVBoxLayout()
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(0)
-        content_widget.setLayout(content_layout)
-        main_layout.addWidget(content_widget, 85)  # 85% ширины
+        # Set initial page
+        self.show_page("home")
 
-        # Заголовок (10% высоты контентной области)
-        self.header = QLabel("recommend")
-        self.header.setObjectName("headerLabel")
-        self.header.setAlignment(Qt.AlignCenter)
-        self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        content_layout.addWidget(self.header, 10)  # 10% высоты
+    def init_sidebar(self):
+        # Create sidebar
+        self.sidebar = Sidebar(self, self.settings)
 
-        # Сетка с карточками (90% высоты контентной области)
-        self.grid_container = QWidget()
-        self.grid_container.setObjectName("gridContainer")
-        self.grid_layout = QGridLayout()
-        self.grid_layout.setSpacing(15)  # Отступы между карточками
-        self.grid_layout.setContentsMargins(0, 0, 0, 0)
-        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        self.grid_container.setLayout(self.grid_layout)
-        content_layout.addWidget(self.grid_container, 90)  # 90% высоты
+        # Set sidebar position
+        sidebar_position = Qt.DockWidgetArea(
+            int(self.settings.value("sidebar_position", Qt.LeftDockWidgetArea))
+        )
+        self.addDockWidget(sidebar_position, self.sidebar)
 
-        # Генерация данных
-        self.recommendations = [
-            ("Summer Vibes", "Adventure", "cover1.jpg"),
-            ("Mountain Echo", "Fantasy", "cover2.jpg"),
-            ("City Lights", "Sci-Fi", "cover3.jpg"),
-            ("Desert Wind", "Romance", "cover4.jpg"),
-            ("Night Sky", "Mystery", "cover5.jpg"),
-            ("Deep Space", "Horror", "cover6.jpg"),
-            ("Morning Dew", "Comedy", "cover7.jpg"),
-            ("Jazz Lounge", "Drama", "cover8.jpg"),
-            ("Classical Moments", "Historical", "cover9.jpg"),
-            ("Rock Anthems", "Action", "cover10.jpg"),
-            ("Electronic Dreams", "Thriller", "cover11.jpg"),
-            ("Chillout Zone", "Documentary", "cover12.jpg")
-        ]
+        # Set sidebar visibility
+        self.sidebar.setVisible(self.settings.value("show_sidebar", True, type=bool))
 
-        # Создаем карточки
-        self.create_cards()
+    def init_pages(self):
+        self.pages = QStackedWidget()
+        self.setCentralWidget(self.pages)
 
-        # Применяем стили
-        self.apply_styles()
+        self.page_home = HomePage(self.settings)
+        self.page_library = LibraryPage(self.settings)
+        self.page_settings = SettingsPage(self.settings, self.apply_settings)
 
-    def create_cards(self):
-        # Распределяем по 3 ряда и 4 колонки
-        for i in range(3):  # Ряды
-            for j in range(4):  # Колонки
-                idx = i * 4 + j
-                if idx < len(self.recommendations):
-                    title, genre, cover = self.recommendations[idx]
-                    card = RecommendationCard(title, genre, cover)
-                    self.grid_layout.addWidget(card, i, j)
+        self.pages.addWidget(self.page_home)
+        self.pages.addWidget(self.page_library)
+        self.pages.addWidget(self.page_settings)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        # Обновляем размер шрифта заголовка
-        font_size = max(16, int(self.height() * 0.04))
-        font = QFont("Arial", font_size, QFont.Bold)
-        self.header.setFont(font)
+    def show_page(self, page):
+        if page == "home":
+            self.pages.setCurrentWidget(self.page_home)
+        elif page == "library":
+            self.pages.setCurrentWidget(self.page_library)
+        elif page == "settings":
+            self.pages.setCurrentWidget(self.page_settings)
+            self.page_settings.apply_settings(self.settings)
 
-        # Обновляем размеры карточек для соотношения 9:16
-        self.update_card_sizes()
+    def apply_settings(self):
+        try:
+            # Update sidebar position
+            sidebar_position = Qt.DockWidgetArea(
+                int(self.settings.value("sidebar_position", Qt.LeftDockWidgetArea))
+            )
+            self.removeDockWidget(self.sidebar)
+            self.addDockWidget(sidebar_position, self.sidebar)
 
-    def update_card_sizes(self):
-        # Рассчитываем ширину одной карточки
-        container_width = self.grid_container.width() - self.grid_layout.spacing() * 3
-        card_width = int(container_width / 4)
+            # Update sidebar visibility
+            self.sidebar.setVisible(self.settings.value("show_sidebar", True, type=bool))
 
-        # Рассчитываем высоту для соотношения 9:16
-        card_height = int(card_width * 16 / 9)
+            # Apply theme
+            self.apply_theme()
 
-        # Устанавливаем размеры карточек
-        for i in range(self.grid_layout.count()):
-            widget = self.grid_layout.itemAt(i).widget()
-            if isinstance(widget, RecommendationCard):
-                widget.setFixedSize(card_width, card_height)
+            # Apply settings to pages
+            self.page_home.apply_settings(self.settings)
+            self.page_library.apply_settings(self.settings)
 
-    def apply_styles(self):
-        self.setStyleSheet("""
-            #centralWidget {
-                background-color: #121212;
-            }
+            # Save settings
+            self.settings.sync()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to apply settings: {str(e)}")
 
-            #sidebar {
-                background-color: #181818;
-                border-right: 1px solid #282828;
-            }
+    def apply_theme(self):
+        theme = self.settings.value("theme", "dark", type=str)
+        try:
+            if theme == "dark":
+                # Dark theme
+                palette = QPalette()
+                palette.setColor(QPalette.Window, QColor(30, 30, 30))
+                palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
+                palette.setColor(QPalette.Base, QColor(20, 20, 20))
+                palette.setColor(QPalette.AlternateBase, QColor(40, 40, 40))
+                palette.setColor(QPalette.ToolTipBase, QColor(40, 40, 40))
+                palette.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
+                palette.setColor(QPalette.Text, QColor(220, 220, 220))
+                palette.setColor(QPalette.Button, QColor(50, 50, 50))
+                palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+                palette.setColor(QPalette.BrightText, QColor(255, 255, 255))
+                palette.setColor(QPalette.Highlight, QColor(100, 100, 200))
+                palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+                palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
+                palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
+                QApplication.setPalette(palette)
 
-            #sidebarButton {
-                background-color: #282828;
-                border-radius: 30px;
-                border: none;
-                transition: background-color 0.3s, transform 0.3s;
-            }
+                # Additional styling
+                self.setStyleSheet("""
+                    QMainWindow {
+                        background-color: #1e1e1e;
+                    }
+                    QDockWidget {
+                        background-color: #252525;
+                        border: 1px solid #333;
+                        titlebar-close-icon: url(close_light.png);
+                        titlebar-normal-icon: url(float_light.png);
+                    }
+                    QDockWidget::title {
+                        background: #252525;
+                        padding: 4px;
+                    }
+                    QListWidget {
+                        background-color: #252525;
+                        border: 1px solid #333;
+                        border-radius: 4px;
+                    }
+                    QListWidget::item {
+                        padding: 10px;
+                        border-bottom: 1px solid #333;
+                    }
+                    QListWidget::item:selected {
+                        background-color: #3a3a3a;
+                    }
+                    QLineEdit {
+                        background-color: #353535;
+                        color: #e0e0e0;
+                        padding: 8px 15px;
+                        border-radius: 20px;
+                        font-size: 14px;
+                        border: 1px solid #444;
+                    }
+                """)
+            else:
+                # Light theme
+                palette = QPalette()
+                palette.setColor(QPalette.Window, QColor(240, 240, 240))
+                palette.setColor(QPalette.WindowText, QColor(30, 30, 30))
+                palette.setColor(QPalette.Base, QColor(255, 255, 255))
+                palette.setColor(QPalette.AlternateBase, QColor(245, 245, 245))
+                palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+                palette.setColor(QPalette.ToolTipText, QColor(30, 30, 30))
+                palette.setColor(QPalette.Text, QColor(30, 30, 30))
+                palette.setColor(QPalette.Button, QColor(240, 240, 240))
+                palette.setColor(QPalette.ButtonText, QColor(30, 30, 30))
+                palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
+                palette.setColor(QPalette.Highlight, QColor(100, 150, 230))
+                palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+                palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
+                palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
+                QApplication.setPalette(palette)
 
-            #sidebarButton:hover {
-                background-color: #1db954;
-                transform: scale(1.05);
-            }
+                # Additional styling
+                self.setStyleSheet("""
+                    QMainWindow {
+                        background-color: #f5f5f5;
+                    }
+                    QDockWidget {
+                        background-color: #ffffff;
+                        border: 1px solid #ddd;
+                    }
+                    QDockWidget::title {
+                        background: #ffffff;
+                        padding: 4px;
+                    }
+                    QListWidget {
+                        background-color: #ffffff;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                    }
+                    QListWidget::item {
+                        padding: 10px;
+                        border-bottom: 1px solid #eee;
+                    }
+                    QListWidget::item:selected {
+                        background-color: #e0e0e0;
+                    }
+                    QLineEdit {
+                        background-color: #ffffff;
+                        color: #333333;
+                        padding: 8px 15px;
+                        border-radius: 20px;
+                        font-size: 14px;
+                        border: 1px solid #ddd;
+                    }
+                """)
 
-            #triangleButton {
-                background-color: transparent;
-                border: none;
-                transition: background-color 0.3s;
-            }
+            # Apply theme to sidebar
+            self.sidebar.apply_theme(theme)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to apply theme: {str(e)}")
 
-            #triangleButton:hover {
-                background-color: #1ed760;
-            }
+    def closeEvent(self, event):
+        # Save window state
+        self.settings.setValue("window_geometry", self.saveGeometry())
 
-            #contentWidget {
-                background-color: #0a0a0a;
-            }
+        # Save settings
+        self.settings.sync()
 
-            #headerLabel {
-                color: #ffffff;
-                font-weight: bold;
-                padding: 15px;
-                border-bottom: 2px solid #1db954;
-                transition: font-size 0.3s;
-            }
+        # Clean up resources
+        self.page_home.cleanup()
 
-            #gridContainer {
-                background-color: transparent;
-            }
-
-            #recommendationCard {
-                background-color: #181818;
-                border-radius: 8px;
-                border: 1px solid #282828;
-                cursor: pointer;
-                transition: transform 0.3s, border-color 0.3s;
-            }
-
-            #recommendationCard:hover {
-                transform: translateY(-5px);
-                border-color: #1db954;
-            }
-
-            #imageContainer {
-                border-radius: 8px;
-                background-color: #333;
-            }
-        """)
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = RecommendationsPage()
-    window.show()
-    sys.exit(app.exec())
+    app.setStyle("Fusion")
+
+    # Set application icon
+    if os.path.exists("app_icon.png"):
+        app.setWindowIcon(QIcon("app_icon.png"))
+
+    win = MainWindow()
+    win.show()
+
+    # Handle application exit
+    ret = app.exec()
+    sys.exit(ret)
