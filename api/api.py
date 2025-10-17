@@ -6,7 +6,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QCursor, QBitmap, QPainter
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from googleapiclient.discovery import build
-from config import YOUTUBE_API_KEY  # твій ключ
+from config import YOUTUBE_API_KEY
+
+
+
+
 
 class VideoCard(QFrame):
     def __init__(self, title, thumbnail_url, video_url):
@@ -128,7 +132,7 @@ class YouTubeGrid(QWidget):
 
         main_layout = QVBoxLayout()
 
-        # Пошук
+
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Введіть пошуковий запит")
         self.search_btn = QPushButton("Пошук")
@@ -137,7 +141,7 @@ class YouTubeGrid(QWidget):
         hlayout.addWidget(self.search_btn)
         main_layout.addLayout(hlayout)
 
-        # Область для карток
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.container = QWidget()
@@ -155,7 +159,7 @@ class YouTubeGrid(QWidget):
         if not query:
             return
 
-        # Очистити старі результати
+
         for i in reversed(range(self.grid_layout.count())):
             widget = self.grid_layout.itemAt(i).widget()
             if widget:

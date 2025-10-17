@@ -34,26 +34,11 @@ class SettingsPage(QWidget):
         self.theme_combo.currentTextChanged.connect(self.update_theme)
         form_layout.addRow("Theme:", self.theme_combo)
 
-        # Sidebar position
-        self.sidebar_pos = QComboBox()
-        self.sidebar_pos.addItems(["Left", "Right"])
-        current_pos = "Left" if settings.value("sidebar_position", Qt.LeftDockWidgetArea,
-                                               type=int) == Qt.LeftDockWidgetArea else "Right"
-        self.sidebar_pos.setCurrentText(current_pos)
-        self.sidebar_pos.currentTextChanged.connect(self.update_sidebar_pos)
-        form_layout.addRow("Sidebar Position:", self.sidebar_pos)
 
-        # Sidebar visibility
-        self.show_sidebar = QCheckBox("Show Sidebar")
-        self.show_sidebar.setChecked(settings.value("show_sidebar", True, type=bool))
-        self.show_sidebar.stateChanged.connect(self.update_show_sidebar)
-        form_layout.addRow("Sidebar:", self.show_sidebar)
 
-        # Visibility options
-        self.show_cover = QCheckBox("Show Album Cover")
-        self.show_cover.setChecked(settings.value("show_cover", True, type=bool))
-        self.show_cover.stateChanged.connect(self.update_show_cover)
-        form_layout.addRow("Visibility:", self.show_cover)
+
+
+
 
         layout.addWidget(settings_frame)
         layout.addStretch()
@@ -125,5 +110,4 @@ class SettingsPage(QWidget):
     def apply_settings(self, settings):
         self.settings = settings
         self.theme_combo.setCurrentText(settings.value("theme", "dark", type=str).capitalize())
-        self.show_cover.setChecked(settings.value("show_cover", True, type=bool))
         self.apply_styling()
