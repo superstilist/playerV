@@ -1,6 +1,6 @@
 import sys
 import os
-from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QStyle
+from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox
 from PySide6.QtCore import Qt, QSize, QSettings
 from PySide6.QtGui import QIcon, QPalette, QColor
 
@@ -21,7 +21,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PlayerV")
         self.setMinimumSize(QSize(900, 600))
 
-        # Load window state
+        # Load window geometry only
         self.restoreGeometry(self.settings.value("window_geometry", b""))
 
         # Initialize UI
@@ -35,17 +35,20 @@ class MainWindow(QMainWindow):
         self.show_page("home")
 
     def init_sidebar(self):
-        # Create sidebar
         self.sidebar = Sidebar(self, self.settings)
 
-        # Set sidebar position
-        sidebar_position = Qt.DockWidgetArea(
-            int(self.settings.value("sidebar_position", Qt.LeftDockWidgetArea))
-        )
-        self.addDockWidget(sidebar_position, self.sidebar)
+        # Завжди додаємо sidebar зліва (фіксовано)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.sidebar)
+        self.sidebar.setVisible(True)  # завжди показуємо
 
-        # Set sidebar visibility
-        self.sidebar.setVisible(self.settings.value("show_sidebar", True, type=bool))
+    def closeEvent(self, event):
+        # Save window geometry only
+        self.settings.setValue("window_geometry", self.saveGeometry())
+        self.settings.sync()
+
+        # Clean up resources
+        self.page_home.cleanup()
+        super().closeEvent(event)
 
     def init_pages(self):
         self.pages = QStackedWidget()
@@ -58,6 +61,50 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.page_home)
         self.pages.addWidget(self.page_library)
         self.pages.addWidget(self.page_settings)
+        pages_layout.addWidget(self.pages)
+        row.addWidget(self.pages_container, 1)
+
+        central_layout.addLayout(row)
+
+        # Нижня панель
+        self.bottom_container = QFrame()
+        self.bottom_container.setObjectName("bottomPanel")
+        bottom_layout = QHBoxLayout(self.bottom_container)
+        bottom_layout.setContentsMargins(12, 8, 12, 8)
+        bottom_layout.setSpacing(10)
+
+        # Прогрес-бар зліва
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(self._progress_value)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(12)
+        bottom_layout.addWidget(self.progress_bar, 1, Qt.AlignVCenter)
+
+        # Кнопки по центру
+        controls = QHBoxLayout()
+        controls.setSpacing(12)
+
+        self.btn_prev = QPushButton("⏮")
+        self.btn_play = QPushButton("▶")
+        self.btn_next = QPushButton("⏭")
+
+        for btn in (self.btn_prev, self.btn_play, self.btn_next):
+            btn.setFixedSize(44, 44)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,255,255,10);
+                    border: 1px solid rgba(255,255,255,15);
+                    border-radius: 22px;
+                }
+                QPushButton:hover {
+                    background: rgba(255,255,255,20);
+                }
+                QPushButton:pressed {
+                    background: rgba(255,255,255,5);
+                }
+            """)
 
     def show_page(self, page):
         if page == "home":
@@ -70,24 +117,13 @@ class MainWindow(QMainWindow):
 
     def apply_settings(self):
         try:
-            # Update sidebar position
-            sidebar_position = Qt.DockWidgetArea(
-                int(self.settings.value("sidebar_position", Qt.LeftDockWidgetArea))
-            )
-            self.removeDockWidget(self.sidebar)
-            self.addDockWidget(sidebar_position, self.sidebar)
-
-            # Update sidebar visibility
-            self.sidebar.setVisible(self.settings.value("show_sidebar", True, type=bool))
-
-            # Apply theme
+            # Тепер не рухаємо/не ховаємо sidebar
             self.apply_theme()
 
             # Apply settings to pages
             self.page_home.apply_settings(self.settings)
             self.page_library.apply_settings(self.settings)
 
-            # Save settings
             self.settings.sync()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to apply settings: {str(e)}")
@@ -98,57 +134,26 @@ class MainWindow(QMainWindow):
             if theme == "dark":
                 # Dark theme
                 palette = QPalette()
-                palette.setColor(QPalette.Window, QColor(30, 30, 30))
-                palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
-                palette.setColor(QPalette.Base, QColor(20, 20, 20))
+                palette.setColor(QPalette.Window, QColor(18, 18, 18))
+                palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
+                palette.setColor(QPalette.Base, QColor(24, 24, 24))
                 palette.setColor(QPalette.AlternateBase, QColor(40, 40, 40))
                 palette.setColor(QPalette.ToolTipBase, QColor(40, 40, 40))
-                palette.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
-                palette.setColor(QPalette.Text, QColor(220, 220, 220))
-                palette.setColor(QPalette.Button, QColor(50, 50, 50))
-                palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+                palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
+                palette.setColor(QPalette.Text, QColor(255, 255, 255))
+                palette.setColor(QPalette.Button, QColor(30, 30, 30))
+                palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
                 palette.setColor(QPalette.BrightText, QColor(255, 255, 255))
-                palette.setColor(QPalette.Highlight, QColor(100, 100, 200))
+                palette.setColor(QPalette.Highlight, QColor(29, 185, 84))
                 palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
                 palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
                 palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
                 QApplication.setPalette(palette)
 
-                # Additional styling
                 self.setStyleSheet("""
-                    QMainWindow {
-                        background-color: #1e1e1e;
-                    }
-                    QDockWidget {
-                        background-color: #252525;
-                        border: 1px solid #333;
-                        titlebar-close-icon: url(close_light.png);
-                        titlebar-normal-icon: url(float_light.png);
-                    }
-                    QDockWidget::title {
-                        background: #252525;
-                        padding: 4px;
-                    }
-                    QListWidget {
-                        background-color: #252525;
-                        border: 1px solid #333;
-                        border-radius: 4px;
-                    }
-                    QListWidget::item {
-                        padding: 10px;
-                        border-bottom: 1px solid #333;
-                    }
-                    QListWidget::item:selected {
-                        background-color: #3a3a3a;
-                    }
-                    QLineEdit {
-                        background-color: #353535;
-                        color: #e0e0e0;
-                        padding: 8px 15px;
-                        border-radius: 20px;
-                        font-size: 14px;
-                        border: 1px solid #444;
-                    }
+                    QMainWindow { background-color: #121212; }
+                    QDockWidget { background-color: #000000; border: 1px solid #333; }
+                    QDockWidget::title { background: #000000; padding: 4px; color: white; }
                 """)
             else:
                 # Light theme
@@ -163,45 +168,16 @@ class MainWindow(QMainWindow):
                 palette.setColor(QPalette.Button, QColor(240, 240, 240))
                 palette.setColor(QPalette.ButtonText, QColor(30, 30, 30))
                 palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
-                palette.setColor(QPalette.Highlight, QColor(100, 150, 230))
+                palette.setColor(QPalette.Highlight, QColor(29, 185, 84))
                 palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
                 palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
                 palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
                 QApplication.setPalette(palette)
 
-                # Additional styling
                 self.setStyleSheet("""
-                    QMainWindow {
-                        background-color: #f5f5f5;
-                    }
-                    QDockWidget {
-                        background-color: #ffffff;
-                        border: 1px solid #ddd;
-                    }
-                    QDockWidget::title {
-                        background: #ffffff;
-                        padding: 4px;
-                    }
-                    QListWidget {
-                        background-color: #ffffff;
-                        border: 1px solid #ddd;
-                        border-radius: 4px;
-                    }
-                    QListWidget::item {
-                        padding: 10px;
-                        border-bottom: 1px solid #eee;
-                    }
-                    QListWidget::item:selected {
-                        background-color: #e0e0e0;
-                    }
-                    QLineEdit {
-                        background-color: #ffffff;
-                        color: #333333;
-                        padding: 8px 15px;
-                        border-radius: 20px;
-                        font-size: 14px;
-                        border: 1px solid #ddd;
-                    }
+                    QMainWindow { background-color: #f5f5f5; }
+                    QDockWidget { background-color: #ffffff; border: 1px solid #ddd; }
+                    QDockWidget::title { background: #ffffff; padding: 4px; color: black; }
                 """)
 
             # Apply theme to sidebar
@@ -209,30 +185,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to apply theme: {str(e)}")
 
-    def closeEvent(self, event):
-        # Save window state
-        self.settings.setValue("window_geometry", self.saveGeometry())
-
-        # Save settings
-        self.settings.sync()
-
-        # Clean up resources
-        self.page_home.cleanup()
-
-        super().closeEvent(event)
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # Set application icon
     if os.path.exists("app_icon.png"):
         app.setWindowIcon(QIcon("app_icon.png"))
 
     win = MainWindow()
     win.show()
-
-    # Handle application exit
-    ret = app.exec()
-    sys.exit(ret)
+    sys.exit(app.exec())
