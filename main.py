@@ -1,12 +1,20 @@
+
 import sys
 import os
+import json
+import shutil
+import hashlib
+from pathlib import Path
+from datetime import datetime
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QStackedWidget, QProgressBar, QPushButton, QLabel, QFrame
+    QStackedWidget, QProgressBar, QPushButton, QLabel, QFrame,
+    QFileDialog, QMessageBox, QMenu, QInputDialog, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, QSize, QSettings, QTimer
-from PySide6.QtGui import QIcon, QPalette, QColor, QFont
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal, QUrl
+from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QAction, QPixmap
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from gui_base.home_page import HomePage
 from gui_base.playist_page import Playlist
@@ -14,6 +22,192 @@ from gui_base.settings_page import SettingsPage
 
 SETTINGS_ORG = "PlayerV"
 SETTINGS_APP = "Player"
+
+
+class MusicScanner(QThread):
+    scan_progress = Signal(int, int)  # current, total
+    scan_complete = Signal(list)
+
+    def __init__(self, music_dir):
+        super().__init__()
+        self.music_dir = music_dir
+        self.music_files = []
+
+    def run(self):
+        # Шукаємо музичні файли
+        extensions = ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac']
+
+        all_files = []
+        for ext in extensions:
+            all_files.extend(list(Path(self.music_dir).rglob(f'*{ext}')))
+
+        self.scan_progress.emit(0, len(all_files))
+
+        music_data = []
+        for i, file_path in enumerate(all_files):
+            try:
+                track_info = self.extract_track_info(file_path)
+                music_data.append(track_info)
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+
+            self.scan_progress.emit(i + 1, len(all_files))
+
+        self.scan_complete.emit(music_data)
+
+    def extract_track_info(self, file_path):
+        import mutagen
+        from mutagen import File as MutagenFile
+        from mutagen.id3 import ID3
+        from mutagen.easyid3 import EasyID3
+
+        file_path = Path(file_path)
+        track = {
+            'id': hashlib.md5(str(file_path).encode()).hexdigest(),
+            'file_path': str(file_path),
+            'file_name': file_path.name,
+            'title': file_path.stem,
+            'artist': 'Unknown Artist',
+            'album': 'Unknown Album',
+            'duration': 0,
+            'track_number': 0,
+            'year': '',
+            'genre': '',
+            'cover_path': None,
+            'date_added': datetime.now().isoformat(),
+            'play_count': 0,
+            'last_played': None
+        }
+
+        try:
+            audio = MutagenFile(file_path)
+            if audio is not None:
+                # Читаємо основні теги
+                if hasattr(audio, 'tags'):
+                    if isinstance(audio, mutagen.id3.ID3):
+                        # Для MP3 з ID3 тегами
+                        try:
+                            track['title'] = str(audio.get('TIT2', [track['title']])[0])
+                            track['artist'] = str(audio.get('TPE1', ['Unknown Artist'])[0])
+                            track['album'] = str(audio.get('TALB', ['Unknown Album'])[0])
+                            track['genre'] = str(audio.get('TCON', [''])[0])
+                            track['track_number'] = str(audio.get('TRCK', ['0'])[0])
+                            track['year'] = str(audio.get('TDRC', [''])[0])
+
+                            # Отримуємо обкладинку
+                            if 'APIC:' in audio:
+                                apic = audio['APIC:']
+                                cover_data = apic.data
+                                cover_ext = '.jpg' if apic.mime == 'image/jpeg' else '.png'
+                                cover_filename = f"{track['id']}{cover_ext}"
+                                cover_path = Path('covers') / cover_filename
+                                cover_path.parent.mkdir(exist_ok=True)
+
+                                with open(cover_path, 'wb') as f:
+                                    f.write(cover_data)
+                                track['cover_path'] = str(cover_path)
+                        except:
+                            pass
+
+                    elif hasattr(audio, 'info'):
+                        # Для інших форматів
+                        if 'title' in audio: track['title'] = str(audio['title'][0])
+                        if 'artist' in audio: track['artist'] = str(audio['artist'][0])
+                        if 'album' in audio: track['album'] = str(audio['album'][0])
+                        if 'genre' in audio: track['genre'] = str(audio['genre'][0])
+
+                # Тривалість
+                if hasattr(audio.info, 'length'):
+                    track['duration'] = int(audio.info.length)
+
+        except Exception as e:
+            print(f"Error reading tags for {file_path}: {e}")
+
+        return track
+
+
+class MusicLibrary:
+    def __init__(self, db_path='music_library.json'):
+        self.db_path = db_path
+        self.tracks = []
+        self.playlists = {}
+        self.load_library()
+
+    def load_library(self):
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.tracks = data.get('tracks', [])
+                    self.playlists = data.get('playlists', {})
+            except Exception as e:
+                print(f"Error loading library: {e}")
+                self.tracks = []
+                self.playlists = {}
+        else:
+            self.tracks = []
+            self.playlists = {
+                'Favorites': [],
+                'Recently Added': [],
+                'Most Played': []
+            }
+
+    def save_library(self):
+        data = {
+            'tracks': self.tracks,
+            'playlists': self.playlists
+        }
+        try:
+            with open(self.db_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving library: {e}")
+
+    def add_track(self, track_info):
+        # Перевіряємо чи не існує вже такий трек
+        existing_ids = [t['id'] for t in self.tracks]
+        if track_info['id'] not in existing_ids:
+            self.tracks.append(track_info)
+            # Додаємо до "Recently Added"
+            if 'Recently Added' in self.playlists:
+                self.playlists['Recently Added'].insert(0, track_info['id'])
+                # Обмежуємо до 50 треків
+                if len(self.playlists['Recently Added']) > 50:
+                    self.playlists['Recently Added'] = self.playlists['Recently Added'][:50]
+            self.save_library()
+            return True
+        return False
+
+    def create_playlist(self, name):
+        if name not in self.playlists:
+            self.playlists[name] = []
+            self.save_library()
+            return True
+        return False
+
+    def add_to_playlist(self, playlist_name, track_id):
+        if playlist_name in self.playlists:
+            if track_id not in self.playlists[playlist_name]:
+                self.playlists[playlist_name].append(track_id)
+                self.save_library()
+                return True
+        return False
+
+    def remove_from_playlist(self, playlist_name, track_id):
+        if playlist_name in self.playlists:
+            if track_id in self.playlists[playlist_name]:
+                self.playlists[playlist_name].remove(track_id)
+                self.save_library()
+                return True
+        return False
+
+    def increment_play_count(self, track_id):
+        for track in self.tracks:
+            if track['id'] == track_id:
+                track['play_count'] = track.get('play_count', 0) + 1
+                track['last_played'] = datetime.now().isoformat()
+                self.save_library()
+                break
 
 
 class MainWindow(QMainWindow):
@@ -32,13 +226,33 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # Ініціалізація музичної бібліотеки
+        self.music_dir = 'music'
+        if not os.path.exists(self.music_dir):
+            os.makedirs(self.music_dir)
+
+        self.library = MusicLibrary()
+        self.current_playlist = []
+        self.current_track_index = -1
+
         # Стан плеєра
         self._is_playing = False
         self._progress_value = 0
 
+        # Медіа плеєр
+        self.media_player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.media_player.setAudioOutput(self.audio_output)
+        self.media_player.positionChanged.connect(self.update_progress)
+        self.media_player.durationChanged.connect(self.update_duration)
+        self.media_player.mediaStatusChanged.connect(self.media_status_changed)
+
         self.init_ui()
         self.apply_theme()
         self.apply_settings()
+
+        # Сканування музики при запуску
+        self.scan_music_library()
 
         # Таймер для демонстрації прогресу
         self._timer = QTimer(self)
@@ -54,10 +268,8 @@ class MainWindow(QMainWindow):
         central_layout.setContentsMargins(14, 14, 14, 14)
         central_layout.setSpacing(12)
 
-        
         row = QHBoxLayout()
         row.setSpacing(12)
-
 
         self.left_container = QFrame()
         self.left_container.setObjectName("leftPanel")
@@ -66,12 +278,34 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
 
+        # Заголовок та кнопка додавання музики
+        left_title_layout = QHBoxLayout()
         left_title = QLabel("Плейлисти")
         left_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        left_layout.addWidget(left_title)
+        left_title_layout.addWidget(left_title)
 
-        self.left_playlist = Playlist(self.settings)
-        left_layout.addWidget(self.left_playlist)
+        # Кнопка додавання музики
+        self.btn_add_music = QPushButton("+ Додати музику")
+        self.btn_add_music.setFixedHeight(30)
+        self.btn_add_music.clicked.connect(self.add_music_files)
+        left_title_layout.addWidget(self.btn_add_music)
+
+        left_layout.addLayout(left_title_layout)
+
+        # Список плейлистів
+        self.playlist_list = QListWidget()
+        self.playlist_list.itemClicked.connect(self.on_playlist_selected)
+        self.playlist_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.playlist_list.customContextMenuRequested.connect(self.show_playlist_context_menu)
+        left_layout.addWidget(self.playlist_list)
+
+        # Список треків у вибраному плейлисті
+        self.track_list = QListWidget()
+        self.track_list.itemDoubleClicked.connect(self.on_track_double_clicked)
+        self.track_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.track_list.customContextMenuRequested.connect(self.show_track_context_menu)
+        left_layout.addWidget(self.track_list)
+
         row.addWidget(self.left_container)
 
         # Панель сторінок
@@ -101,21 +335,33 @@ class MainWindow(QMainWindow):
         bottom_layout.setContentsMargins(12, 8, 12, 8)
         bottom_layout.setSpacing(10)
 
-        # Прогрес-бар зліва
+        # Інформація про поточний трек
+        self.current_track_info = QLabel("Виберіть трек")
+        bottom_layout.addWidget(self.current_track_info, 1)
+
+        # Прогрес-бар
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(self._progress_value)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setFixedHeight(12)
-        bottom_layout.addWidget(self.progress_bar, 1, Qt.AlignVCenter)
+        bottom_layout.addWidget(self.progress_bar, 3)
 
         # Кнопки по центру
         controls = QHBoxLayout()
         controls.setSpacing(12)
 
-        self.btn_prev = QPushButton("⏮")
-        self.btn_play = QPushButton("▶")
-        self.btn_next = QPushButton("⏭")
+        self.btn_prev = QPushButton()
+        self.btn_prev.setIcon(QIcon('assets/back.png'))
+        self.btn_prev.setToolTip("Попередній трек")
+
+        self.btn_play = QPushButton()
+        self.btn_play.setIcon(QIcon('assets/play.png'))
+        self.btn_play.setToolTip("Відтворити/Пауза")
+
+        self.btn_next = QPushButton()
+        self.btn_next.setIcon(QIcon('assets/next.png'))
+        self.btn_next.setToolTip("Наступний трек")
 
         for btn in (self.btn_prev, self.btn_play, self.btn_next):
             btn.setFixedSize(44, 44)
@@ -148,43 +394,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.setStyleSheet(self.build_stylesheet())
-
-    # ---------- логіка кнопок ----------
-    def on_play_pause(self):
-        if self._is_playing:
-            self._timer.stop()
-            self._is_playing = False
-            self.btn_play.setText("▶")
-        else:
-            self._timer.start()
-            self._is_playing = True
-            self.btn_play.setText("⏸")
-
-    def on_prev(self):
-        self._progress_value = 0
-        self.progress_bar.setValue(self._progress_value)
-
-    def on_next(self):
-        self._progress_value = 0
-        self.progress_bar.setValue(self._progress_value)
-
-    def _on_tick(self):
-        self._progress_value += 5
-        if self._progress_value > 100:
-            self._progress_value = 0
-        self.progress_bar.setValue(self._progress_value)
-
-    # ---------- Теми ----------
-    def apply_theme(self):
-        theme = self.settings.value("theme", "dark", type=str)
-        pal = QPalette()
-        if theme == "dark":
-            pal.setColor(QPalette.Window, QColor(18, 18, 18))
-            pal.setColor(QPalette.WindowText, QColor(230, 230, 230))
-        else:
-            pal.setColor(QPalette.Window, QColor(245, 245, 245))
-            pal.setColor(QPalette.WindowText, QColor(30, 30, 30))
-        QApplication.setPalette(pal)
+        self.update_playlist_list()
+        self.update_track_list('Recently Added')
 
     def build_stylesheet(self) -> str:
         return """
@@ -218,7 +429,257 @@ class MainWindow(QMainWindow):
                 stop:0 #1DB954, stop:1 #179944);
             border-radius: 8px;
         }
+
+        QListWidget {
+            background: transparent;
+            border: none;
+            outline: none;
+        }
+
+        QListWidget::item {
+            padding: 8px;
+            border-radius: 8px;
+        }
+
+        QListWidget::item:selected {
+            background: rgba(29, 185, 84, 0.3);
+        }
+
+        QListWidget::item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        QPushButton {
+            background: rgba(40, 40, 40, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 8px 16px;
+        }
+
+        QPushButton:hover {
+            background: rgba(60, 60, 60, 0.9);
+        }
         """
+
+    # ---------- Музична бібліотека ----------
+    def scan_music_library(self):
+        self.scanner = MusicScanner(self.music_dir)
+        self.scanner.scan_complete.connect(self.on_scan_complete)
+        self.scanner.start()
+
+    def on_scan_complete(self, music_data):
+        for track in music_data:
+            self.library.add_track(track)
+        self.update_track_list('Recently Added')
+        QMessageBox.information(self, "Сканування завершено",
+                                f"Знайдено {len(music_data)} треків")
+
+    def add_music_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Виберіть музичні файли",
+            "",
+            "Музичні файли (*.mp3 *.wav *.flac *.ogg *.m4a *.aac)"
+        )
+
+        if files:
+            for file_path in files:
+                try:
+                    dest_path = os.path.join(self.music_dir, os.path.basename(file_path))
+                    # Якщо файл вже існує, додаємо індекс
+                    if os.path.exists(dest_path):
+                        name, ext = os.path.splitext(os.path.basename(file_path))
+                        counter = 1
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(self.music_dir, f"{name}_{counter}{ext}")
+                            counter += 1
+
+                    shutil.copy2(file_path, dest_path)
+
+                    # Додаємо до бібліотеки
+                    scanner = MusicScanner(self.music_dir)
+                    track_info = scanner.extract_track_info(dest_path)
+                    if self.library.add_track(track_info):
+                        print(f"Додано: {track_info['title']}")
+
+                except Exception as e:
+                    QMessageBox.warning(self, "Помилка", f"Не вдалося додати файл: {e}")
+
+            self.update_track_list('Recently Added')
+            QMessageBox.information(self, "Файли додано",
+                                    f"Додано {len(files)} файлів у бібліотеку")
+
+    # ---------- Плейлисти ----------
+    def update_playlist_list(self):
+        self.playlist_list.clear()
+        for playlist_name in self.library.playlists.keys():
+            item = QListWidgetItem(f"📁 {playlist_name}")
+            item.setData(Qt.UserRole, playlist_name)
+            self.playlist_list.addItem(item)
+
+    def on_playlist_selected(self, item):
+        playlist_name = item.data(Qt.UserRole)
+        self.update_track_list(playlist_name)
+
+    def update_track_list(self, playlist_name):
+        self.track_list.clear()
+        self.current_playlist = []
+
+        if playlist_name in self.library.playlists:
+            for track_id in self.library.playlists[playlist_name]:
+                track = self.get_track_by_id(track_id)
+                if track:
+                    self.current_playlist.append(track)
+
+                    # Форматуємо тривалість
+                    duration = track.get('duration', 0)
+                    minutes = duration // 60
+                    seconds = duration % 60
+                    duration_str = f"{minutes}:{seconds:02d}"
+
+                    item_text = f"{track['title']} - {track['artist']} ({duration_str})"
+                    item = QListWidgetItem(item_text)
+                    item.setData(Qt.UserRole, track['id'])
+                    self.track_list.addItem(item)
+
+    def get_track_by_id(self, track_id):
+        for track in self.library.tracks:
+            if track['id'] == track_id:
+                return track
+        return None
+
+    def show_playlist_context_menu(self, position):
+        menu = QMenu()
+
+        create_action = menu.addAction("Створити новий плейлист")
+        rename_action = menu.addAction("Перейменувати плейлист")
+        delete_action = menu.addAction("Видалити плейлист")
+
+        action = menu.exec_(self.playlist_list.mapToGlobal(position))
+
+        if action == create_action:
+            self.create_new_playlist()
+        elif action == rename_action:
+            self.rename_playlist()
+        elif action == delete_action:
+            self.delete_playlist()
+
+    def create_new_playlist(self):
+        name, ok = QInputDialog.getText(self, "Новий плейлист", "Введіть назву плейлиста:")
+        if ok and name:
+            if self.library.create_playlist(name):
+                self.update_playlist_list()
+
+    def show_track_context_menu(self, position):
+        menu = QMenu()
+        item = self.track_list.itemAt(position)
+        if item:
+            track_id = item.data(Qt.UserRole)
+
+            add_to_playlist_action = menu.addAction("Додати до плейлиста...")
+            menu.addSeparator()
+            play_action = menu.addAction("Відтворити")
+            remove_action = menu.addAction("Видалити з плейлиста")
+
+            action = menu.exec_(self.track_list.mapToGlobal(position))
+
+            if action == add_to_playlist_action:
+                self.add_track_to_playlist(track_id)
+            elif action == play_action:
+                self.play_track_by_id(track_id)
+            elif action == remove_action:
+                self.remove_track_from_playlist(track_id)
+
+    def add_track_to_playlist(self, track_id):
+        playlists = list(self.library.playlists.keys())
+        playlist_name, ok = QInputDialog.getItem(
+            self, "Додати до плейлиста",
+            "Виберіть плейлист:", playlists, 0, False
+        )
+        if ok and playlist_name:
+            if self.library.add_to_playlist(playlist_name, track_id):
+                QMessageBox.information(self, "Успішно", "Трек додано до плейлиста")
+
+    # ---------- Програвання ----------
+    def play_track_by_id(self, track_id):
+        track = self.get_track_by_id(track_id)
+        if track:
+            # Знаходимо індекс трека в поточному плейлисті
+            for i, t in enumerate(self.current_playlist):
+                if t['id'] == track_id:
+                    self.current_track_index = i
+                    break
+
+            self.play_track(track)
+
+    def play_track(self, track):
+        file_url = QUrl.fromLocalFile(track['file_path'])
+        self.media_player.setSource(file_url)
+        self.media_player.play()
+
+        self.current_track_info.setText(f"{track['title']} - {track['artist']}")
+        self.btn_play.setIcon(QIcon('assets/pause.png'))
+        self._is_playing = True
+
+        # Оновлюємо лічильник відтворень
+        self.library.increment_play_count(track['id'])
+
+    def update_progress(self, position):
+        if self.media_player.duration() > 0:
+            self._progress_value = int((position / self.media_player.duration()) * 100)
+            self.progress_bar.setValue(self._progress_value)
+
+    def update_duration(self, duration):
+        pass
+
+    def media_status_changed(self, status):
+        if status == QMediaPlayer.EndOfMedia:
+            self.on_next()
+
+    def on_play_pause(self):
+        if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+            self.media_player.pause()
+            self.btn_play.setIcon(QIcon('assets/play.png'))
+            self._is_playing = False
+        else:
+            if self.current_track_index >= 0 and self.current_playlist:
+                self.play_track(self.current_playlist[self.current_track_index])
+            else:
+                # Спробуємо відтворити перший трек
+                if self.current_playlist:
+                    self.current_track_index = 0
+                    self.play_track(self.current_playlist[0])
+
+    def on_prev(self):
+        if self.current_playlist:
+            self.current_track_index = (self.current_track_index - 1) % len(self.current_playlist)
+            self.play_track(self.current_playlist[self.current_track_index])
+
+    def on_next(self):
+        if self.current_playlist:
+            self.current_track_index = (self.current_track_index + 1) % len(self.current_playlist)
+            self.play_track(self.current_playlist[self.current_track_index])
+
+    def on_track_double_clicked(self, item):
+        track_id = item.data(Qt.UserRole)
+        self.play_track_by_id(track_id)
+
+    def _on_tick(self):
+        # Для демонстрації, якщо немає реального трека
+        if not self._is_playing or self.media_player.playbackState() != QMediaPlayer.PlayingState:
+            return
+
+    # ---------- Теми ----------
+    def apply_theme(self):
+        theme = self.settings.value("theme", "dark", type=str)
+        pal = QPalette()
+        if theme == "dark":
+            pal.setColor(QPalette.Window, QColor(18, 18, 18))
+            pal.setColor(QPalette.WindowText, QColor(230, 230, 230))
+        else:
+            pal.setColor(QPalette.Window, QColor(245, 245, 245))
+            pal.setColor(QPalette.WindowText, QColor(30, 30, 30))
+        QApplication.setPalette(pal)
 
     # ---------- Сторінки ----------
     def show_page(self, page: str):
@@ -242,10 +703,6 @@ class MainWindow(QMainWindow):
             self.page_playlist_page.apply_settings(self.settings)
         except Exception:
             pass
-        try:
-            self.left_playlist.apply_settings(self.settings)
-        except Exception:
-            pass
 
     def closeEvent(self, event):
         try:
@@ -265,6 +722,11 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     if os.path.exists("app_icon.png"):
         app.setWindowIcon(QIcon("app_icon.png"))
+
+    # Створюємо необхідні папки
+    os.makedirs('music', exist_ok=True)
+    os.makedirs('covers', exist_ok=True)
+    os.makedirs('assets', exist_ok=True)
 
     win = MainWindow()
     win.show()
