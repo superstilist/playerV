@@ -1,12 +1,15 @@
 import sys
 import os
-from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox
-from PySide6.QtCore import Qt, QSize, QSettings
-from PySide6.QtGui import QIcon, QPalette, QColor
 
-from gui_base.sidebar import Sidebar
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QStackedWidget, QProgressBar, QPushButton, QLabel, QFrame
+)
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer
+from PySide6.QtGui import QIcon, QPalette, QColor, QFont
+
 from gui_base.home_page import HomePage
-from gui_base.library_page import LibraryPage
+from gui_base.playist_page import Playlist
 from gui_base.settings_page import SettingsPage
 
 SETTINGS_ORG = "PlayerV"
@@ -16,50 +19,75 @@ SETTINGS_APP = "Player"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
-
         self.setWindowTitle("PlayerV")
-        self.setMinimumSize(QSize(900, 600))
+        self.setMinimumSize(QSize(1100, 700))
 
-        # Load window geometry only
-        self.restoreGeometry(self.settings.value("window_geometry", b""))
+        # Відновлення збереженої геометрії
+        geom = self.settings.value("window_geometry", None)
+        if geom:
+            try:
+                self.restoreGeometry(geom)
+            except Exception:
+                pass
 
-        # Initialize UI
-        self.init_sidebar()
-        self.init_pages()
+        # Стан плеєра
+        self._is_playing = False
+        self._progress_value = 0
 
-        # Apply initial settings
+        self.init_ui()
+        self.apply_theme()
         self.apply_settings()
 
-        # Set initial page
+        # Таймер для демонстрації прогресу
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._on_tick)
+
         self.show_page("home")
 
-    def init_sidebar(self):
-        self.sidebar = Sidebar(self, self.settings)
+    # ---------- UI ----------
+    def init_ui(self):
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(14, 14, 14, 14)
+        central_layout.setSpacing(12)
 
-        # Завжди додаємо sidebar зліва (фіксовано)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.sidebar)
-        self.sidebar.setVisible(True)  # завжди показуємо
+        
+        row = QHBoxLayout()
+        row.setSpacing(12)
 
-    def closeEvent(self, event):
-        # Save window geometry only
-        self.settings.setValue("window_geometry", self.saveGeometry())
-        self.settings.sync()
 
-        # Clean up resources
-        self.page_home.cleanup()
-        super().closeEvent(event)
+        self.left_container = QFrame()
+        self.left_container.setObjectName("leftPanel")
+        self.left_container.setFixedWidth(320)
+        left_layout = QVBoxLayout(self.left_container)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setSpacing(8)
 
-    def init_pages(self):
+        left_title = QLabel("Плейлисти")
+        left_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        left_layout.addWidget(left_title)
+
+        self.left_playlist = Playlist(self.settings)
+        left_layout.addWidget(self.left_playlist)
+        row.addWidget(self.left_container)
+
+        # Панель сторінок
+        self.pages_container = QFrame()
+        self.pages_container.setObjectName("pagesPanel")
+        pages_layout = QVBoxLayout(self.pages_container)
+        pages_layout.setContentsMargins(10, 10, 10, 10)
+        pages_layout.setSpacing(8)
+
         self.pages = QStackedWidget()
-        self.setCentralWidget(self.pages)
-
         self.page_home = HomePage(self.settings)
-        self.page_library = LibraryPage(self.settings)
+        self.page_playlist_page = Playlist(self.settings)
         self.page_settings = SettingsPage(self.settings, self.apply_settings)
 
         self.pages.addWidget(self.page_home)
-        self.pages.addWidget(self.page_library)
+        self.pages.addWidget(self.page_playlist_page)
         self.pages.addWidget(self.page_settings)
         pages_layout.addWidget(self.pages)
         row.addWidget(self.pages_container, 1)
@@ -197,86 +225,44 @@ class MainWindow(QMainWindow):
         if page == "home":
             self.pages.setCurrentWidget(self.page_home)
         elif page == "library":
-            self.pages.setCurrentWidget(self.page_library)
+            self.pages.setCurrentWidget(self.page_playlist_page)
         elif page == "settings":
             self.pages.setCurrentWidget(self.page_settings)
-            self.page_settings.apply_settings(self.settings)
+            try:
+                self.page_settings.apply_settings(self.settings)
+            except Exception:
+                pass
 
     def apply_settings(self):
         try:
-            # Тепер не рухаємо/не ховаємо sidebar
-            self.apply_theme()
-
-            # Apply settings to pages
             self.page_home.apply_settings(self.settings)
-            self.page_library.apply_settings(self.settings)
-
-            self.settings.sync()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to apply settings: {str(e)}")
-
-    def apply_theme(self):
-        theme = self.settings.value("theme", "dark", type=str)
+        except Exception:
+            pass
         try:
-            if theme == "dark":
-                # Dark theme
-                palette = QPalette()
-                palette.setColor(QPalette.Window, QColor(18, 18, 18))
-                palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
-                palette.setColor(QPalette.Base, QColor(24, 24, 24))
-                palette.setColor(QPalette.AlternateBase, QColor(40, 40, 40))
-                palette.setColor(QPalette.ToolTipBase, QColor(40, 40, 40))
-                palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
-                palette.setColor(QPalette.Text, QColor(255, 255, 255))
-                palette.setColor(QPalette.Button, QColor(30, 30, 30))
-                palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
-                palette.setColor(QPalette.BrightText, QColor(255, 255, 255))
-                palette.setColor(QPalette.Highlight, QColor(29, 185, 84))
-                palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-                palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
-                palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
-                QApplication.setPalette(palette)
+            self.page_playlist_page.apply_settings(self.settings)
+        except Exception:
+            pass
+        try:
+            self.left_playlist.apply_settings(self.settings)
+        except Exception:
+            pass
 
-                self.setStyleSheet("""
-                    QMainWindow { background-color: #121212; }
-                    QDockWidget { background-color: #000000; border: 1px solid #333; }
-                    QDockWidget::title { background: #000000; padding: 4px; color: white; }
-                """)
-            else:
-                # Light theme
-                palette = QPalette()
-                palette.setColor(QPalette.Window, QColor(240, 240, 240))
-                palette.setColor(QPalette.WindowText, QColor(30, 30, 30))
-                palette.setColor(QPalette.Base, QColor(255, 255, 255))
-                palette.setColor(QPalette.AlternateBase, QColor(245, 245, 245))
-                palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
-                palette.setColor(QPalette.ToolTipText, QColor(30, 30, 30))
-                palette.setColor(QPalette.Text, QColor(30, 30, 30))
-                palette.setColor(QPalette.Button, QColor(240, 240, 240))
-                palette.setColor(QPalette.ButtonText, QColor(30, 30, 30))
-                palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
-                palette.setColor(QPalette.Highlight, QColor(29, 185, 84))
-                palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-                palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
-                palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
-                QApplication.setPalette(palette)
-
-                self.setStyleSheet("""
-                    QMainWindow { background-color: #f5f5f5; }
-                    QDockWidget { background-color: #ffffff; border: 1px solid #ddd; }
-                    QDockWidget::title { background: #ffffff; padding: 4px; color: black; }
-                """)
-
-            # Apply theme to sidebar
-            self.sidebar.apply_theme(theme)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to apply theme: {str(e)}")
+    def closeEvent(self, event):
+        try:
+            self.settings.setValue("window_geometry", self.saveGeometry())
+            self.settings.sync()
+        except Exception:
+            pass
+        try:
+            self.page_home.cleanup()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-
     if os.path.exists("app_icon.png"):
         app.setWindowIcon(QIcon("app_icon.png"))
 

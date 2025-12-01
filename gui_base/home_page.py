@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QGraphicsDropShadowEffect, QGridLayout, QScrollArea
+from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QScrollArea
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QPainter, QColor, QBrush, QFont, QPixmap, QLinearGradient
 
@@ -18,6 +18,14 @@ class HomePage(QWidget):
         self.cover_frame = QFrame()
         self.cover_frame.setMinimumSize(320, 320)
         self.cover_frame.setMaximumSize(400, 400)
+
+        # Напівпрозорий фон
+        self.cover_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(24, 24, 24, 0.7);
+                border-radius: 20px;
+            }
+        """)
 
         shadow = QGraphicsDropShadowEffect(self.cover_frame)
         shadow.setBlurRadius(25)
@@ -54,7 +62,6 @@ class HomePage(QWidget):
 
         # Recommendations section
         self.add_recommendations_section(layout)
-
         layout.addStretch()
 
     def add_recommendations_section(self, layout):
@@ -69,22 +76,10 @@ class HomePage(QWidget):
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setStyleSheet("""
-            QScrollArea {
-                background-color: transparent;
-                border: none;
-            }
-            QScrollBar:horizontal {
-                background: #404040;
-                height: 10px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #606060;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background: #808080;
-            }
+            QScrollArea { background-color: transparent; border: none; }
+            QScrollBar:horizontal { background: #404040; height: 10px; border-radius: 5px; }
+            QScrollBar::handle:horizontal { background: #606060; border-radius: 5px; }
+            QScrollBar::handle:horizontal:hover { background: #808080; }
         """)
 
         container = QWidget()
@@ -94,7 +89,6 @@ class HomePage(QWidget):
 
         scroll_area.setWidget(container)
         layout.addWidget(scroll_area)
-
         self.populate_recommendations()
 
     def populate_recommendations(self):
@@ -105,18 +99,12 @@ class HomePage(QWidget):
             {"title": "Rock Classics", "color": (180, 120, 80)},
             {"title": "Mood Booster", "color": (160, 100, 200)},
             {"title": "Jazz Vibes", "color": (120, 160, 180)},
-            {"title": "Electronic Dance", "color": (200, 160, 80)},
-            {"title": "Electronic Dance", "color": (200, 160, 80)},
-            {"title": "Electronic Dance", "color": (200, 160, 80)},
-            {"title": "Electronic Dance", "color": (200, 160, 80)},
-            {"title": "Electronic Dance", "color": (200, 160, 80)},
-            {"title": "Electronic Dance", "color": (200, 160, 80)},
             {"title": "Electronic Dance", "color": (200, 160, 80)}
         ]
 
         for i, rec in enumerate(recommendations):
             card = self.create_recommendation_card(rec)
-            row = i // 4  # 4 картки в ряд
+            row = i // 4
             col = i % 4
             self.rec_layout.addWidget(card, row, col)
 
@@ -125,11 +113,11 @@ class HomePage(QWidget):
         card.setFixedSize(180, 220)
         card.setStyleSheet("""
             QFrame {
-                background-color: #181818;
-                border-radius: 12px;
+                background-color: rgba(24, 24, 24, 0.7);  /* напівпрозорий */
+                border-radius: 20px;
             }
             QFrame:hover {
-                background-color: #282828;
+                background-color: rgba(40, 40, 40, 0.85);
             }
         """)
 
@@ -152,7 +140,6 @@ class HomePage(QWidget):
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-
         gradient = QLinearGradient(0, 0, icon_size.width(), icon_size.height())
         gradient.setColorAt(0, QColor(*rec["color"]))
         gradient.setColorAt(1, QColor(rec["color"][0] // 2,
