@@ -1,12 +1,10 @@
-
 import os
 import hashlib
-from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QScrollArea, \
-    QPushButton
+from pathlib import Path
+from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QScrollArea
 from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QPainter, QColor, QBrush, QFont, QPixmap, QLinearGradient
-from mutagen.id3 import ID3
-from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC
 
 
 class MusicScanner(QThread):
@@ -16,6 +14,9 @@ class MusicScanner(QThread):
     def __init__(self, music_folder="music"):
         super().__init__()
         self.music_folder = music_folder
+        # Створюємо папку для обкладинок
+        self.covers_dir = Path("covers")
+        self.covers_dir.mkdir(exist_ok=True)
 
     def run(self):
         songs = []
@@ -49,7 +50,7 @@ class MusicScanner(QThread):
             'album': 'Unknown Album',
             'filename': os.path.basename(filepath),
             'filepath': filepath,
-            'cover_data': None
+            'cover_path': None  # Шлях до збереженої обкладинки
         }
 
         try:
@@ -68,11 +69,21 @@ class MusicScanner(QThread):
                 for key in audio.keys():
                     if key.startswith('APIC'):
                         apic = audio[key]
-                        song['cover_data'] = apic.data
-                        break
+                        if isinstance(apic, APIC):
+                            # Генеруємо унікальне ім'я для обкладинки
+                            cover_hash = hashlib.md5(song['title'].encode()).hexdigest()[:8]
+                            cover_ext = '.jpg' if apic.mime == 'image/jpeg' else '.png'
+                            cover_filename = f"{cover_hash}{cover_ext}"
+                            cover_path = self.covers_dir / cover_filename
+
+                            # Зберігаємо обкладинку
+                            with open(cover_path, 'wb') as f:
+                                f.write(apic.data)
+
+                            song['cover_path'] = str(cover_path)
+                            break
 
         except Exception as e:
-            # Якщо не вдалося прочитати ID3 теги, використовуємо ім'я файлу
             print(f"Could not read ID3 tags for {filepath}: {e}")
 
         return song
@@ -87,7 +98,7 @@ class HomePage(QWidget):
         layout.setContentsMargins(25, 25, 25, 25)
         layout.setSpacing(20)
 
-        # Cover art section - зберігаємо оригінальний дизайн
+        # Cover art section
         self.cover_container = QWidget()
         cover_layout = QVBoxLayout(self.cover_container)
         cover_layout.setContentsMargins(0, 0, 0, 0)
@@ -95,8 +106,6 @@ class HomePage(QWidget):
         self.cover_frame = QFrame()
         self.cover_frame.setMinimumSize(320, 320)
         self.cover_frame.setMaximumSize(400, 400)
-
-        # Напівпрозорий фон
         self.cover_frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(24, 24, 24, 0.7);
@@ -110,57 +119,37 @@ class HomePage(QWidget):
         shadow.setColor(QColor(0, 0, 0, 120))
         self.cover_frame.setGraphicsEffect(shadow)
 
-        # Label для обкладинки
         self.cover_label = QLabel()
         self.cover_label.setAlignment(Qt.AlignCenter)
         cover_layout.addWidget(self.cover_label)
         cover_layout.addWidget(self.cover_frame)
         layout.addWidget(self.cover_container, 0, Qt.AlignCenter)
 
-        # Track info - буде оновлюватись при виборі пісні
+        # Track info
         track_layout = QVBoxLayout()
         track_layout.setSpacing(8)
 
-        self.track_title = QLabel("Select a Song")
-        self.track_title.setFont(QFont("Arial", 24, QFont.Bold))
+        self.track_title = QLabel("Select a song")
+        self.track_title.setFont(QFont("Arial", 16, QFont.Bold))
         self.track_title.setAlignment(Qt.AlignCenter)
         self.track_title.setStyleSheet("color: white;")
+        track_layout.addWidget(self.track_title)
 
-        self.track_artist = QLabel("From Your Library")
-        self.track_artist.setFont(QFont("Arial", 18))
+        self.track_artist = QLabel("Artist")
+        self.track_artist.setFont(QFont("Arial", 14))
         self.track_artist.setAlignment(Qt.AlignCenter)
         self.track_artist.setStyleSheet("color: #b3b3b3;")
+        track_layout.addWidget(self.track_artist)
 
-        self.track_album = QLabel("Click any song to play")
-        self.track_album.setFont(QFont("Arial", 16))
+        self.track_album = QLabel("Album")
+        self.track_album.setFont(QFont("Arial", 12))
         self.track_album.setAlignment(Qt.AlignCenter)
         self.track_album.setStyleSheet("color: #b3b3b3;")
-
-        track_layout.addWidget(self.track_title)
-        track_layout.addWidget(self.track_artist)
         track_layout.addWidget(self.track_album)
+
         layout.addLayout(track_layout)
 
-        # Кнопка оновлення бібліотеки
-        self.refresh_btn = QPushButton("🔄 Refresh Music Library")
-        self.refresh_btn.setFixedHeight(40)
-        self.refresh_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1DB954;
-                color: white;
-                border: none;
-                border-radius: 20px;
-                font-weight: bold;
-                padding: 0 20px;
-            }
-            QPushButton:hover {
-                background-color: #1ed760;
-            }
-        """)
-        self.refresh_btn.clicked.connect(self.scan_music)
-        layout.addWidget(self.refresh_btn, alignment=Qt.AlignCenter)
-
-        # Music Library section замість Recommendations
+        # Music Library section
         self.add_music_library_section(layout)
         layout.addStretch()
 
@@ -256,9 +245,9 @@ class HomePage(QWidget):
         icon_label.setFixedSize(icon_size)
         icon_label.setAlignment(Qt.AlignCenter)
 
-        if song['cover_data']:
-            pixmap = QPixmap()
-            pixmap.loadFromData(song['cover_data'])
+        # Завантажуємо обкладинку з файлу, якщо вона є
+        if song['cover_path'] and os.path.exists(song['cover_path']):
+            pixmap = QPixmap(song['cover_path'])
             if not pixmap.isNull():
                 pixmap = pixmap.scaled(icon_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
                 # Обрізаємо до квадрата
@@ -325,9 +314,7 @@ class HomePage(QWidget):
         note_color = QColor(255, 255, 255, 200)
         painter.setBrush(QBrush(note_color))
 
-        # Більша нотка для кращого відображення
         center_x, center_y = size.width() // 2, size.height() // 2
-
         painter.drawEllipse(center_x - 20, center_y - 20, 40, 40)
         painter.drawRect(center_x - 5, center_y + 20, 10, 40)
         painter.drawEllipse(center_x - 30, center_y - 30, 20, 20)
@@ -395,4 +382,3 @@ class HomePage(QWidget):
         if hasattr(self, 'scanner') and self.scanner.isRunning():
             self.scanner.terminate()
             self.scanner.wait()
-
