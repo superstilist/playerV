@@ -106,7 +106,94 @@ class MainWindow(QMainWindow):
                 }
             """)
 
-    def show_page(self, page):
+        self.btn_prev.clicked.connect(self.on_prev)
+        self.btn_play.clicked.connect(self.on_play_pause)
+        self.btn_next.clicked.connect(self.on_next)
+
+        controls.addWidget(self.btn_prev)
+        controls.addWidget(self.btn_play)
+        controls.addWidget(self.btn_next)
+
+        bottom_layout.addLayout(controls)
+
+        central_layout.addWidget(self.bottom_container)
+        self.setCentralWidget(central)
+
+        self.setStyleSheet(self.build_stylesheet())
+
+    # ---------- логіка кнопок ----------
+    def on_play_pause(self):
+        if self._is_playing:
+            self._timer.stop()
+            self._is_playing = False
+            self.btn_play.setText("▶")
+        else:
+            self._timer.start()
+            self._is_playing = True
+            self.btn_play.setText("⏸")
+
+    def on_prev(self):
+        self._progress_value = 0
+        self.progress_bar.setValue(self._progress_value)
+
+    def on_next(self):
+        self._progress_value = 0
+        self.progress_bar.setValue(self._progress_value)
+
+    def _on_tick(self):
+        self._progress_value += 5
+        if self._progress_value > 100:
+            self._progress_value = 0
+        self.progress_bar.setValue(self._progress_value)
+
+    # ---------- Теми ----------
+    def apply_theme(self):
+        theme = self.settings.value("theme", "dark", type=str)
+        pal = QPalette()
+        if theme == "dark":
+            pal.setColor(QPalette.Window, QColor(18, 18, 18))
+            pal.setColor(QPalette.WindowText, QColor(230, 230, 230))
+        else:
+            pal.setColor(QPalette.Window, QColor(245, 245, 245))
+            pal.setColor(QPalette.WindowText, QColor(30, 30, 30))
+        QApplication.setPalette(pal)
+
+    def build_stylesheet(self) -> str:
+        return """
+        QWidget {
+            background: transparent;
+            color: #e8e8e8;
+            font-family: "Segoe UI", "Arial", sans-serif;
+            font-size: 12px;
+        }
+
+        QFrame#leftPanel {
+            background: rgba(30,30,32,180);
+            border-radius: 16px;
+        }
+        QFrame#pagesPanel {
+            background: rgba(24,24,26,180);
+            border-radius: 16px;
+        }
+        QFrame#bottomPanel {
+            background: rgba(18,18,20,200);
+            border-radius: 16px;
+        }
+
+        QProgressBar {
+            background: rgba(255,255,255,10);
+            border-radius: 8px;
+            min-height: 12px;
+        }
+        QProgressBar::chunk {
+            background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
+                stop:0 #1DB954, stop:1 #179944);
+            border-radius: 8px;
+        }
+        """
+
+    # ---------- Сторінки ----------
+    def show_page(self, page: str):
         if page == "home":
             self.pages.setCurrentWidget(self.page_home)
         elif page == "library":
