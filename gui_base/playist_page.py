@@ -1,17 +1,21 @@
-
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QHBoxLayout, QFrame, QLineEdit, QScrollArea, QPushButton, \
-    QInputDialog, QMessageBox
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QBrush, QLinearGradient
+    QInputDialog, QMessageBox, QMenu, QSizePolicy, QFileDialog
+from PySide6.QtCore import Qt, QSize, Signal, QPoint
+from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QBrush, QLinearGradient, QAction
 import json
 import os
 import random
 
 
 class Playlist(QWidget):
-    def __init__(self, settings):
+    playlist_clicked = Signal(str)  # Сигнал при кліку на плейлист
+    track_context_requested = Signal(dict, QPoint)  # Сигнал для контекстного меню трека
+
+    def __init__(self, settings, library, main_window):
         super().__init__()
         self.settings = settings
+        self.library = library
+        self.main_window = main_window
         self.playlists_file = "playlists.json"
         self.playlists = self.load_playlists()
 
@@ -49,17 +53,23 @@ class Playlist(QWidget):
         main_layout.addLayout(title_layout)
 
         # Панель пошуку
-        search_field = QLineEdit()
-        search_field.setPlaceholderText("Search playlists...")
-        search_field.setMinimumHeight(30)
-        main_layout.addWidget(search_field)
+        self.search_field = QLineEdit()
+        self.search_field.setPlaceholderText("Search playlists...")
+        self.search_field.setMinimumHeight(30)
+        self.search_field.textChanged.connect(self.filter_playlists)
+        main_layout.addWidget(self.search_field)
 
         # Прокрутка
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
 
+        # Контейнер плейлистів
         self.playlists_container = QWidget()
+        self.playlists_container.setObjectName("playlists_container")
+        self.playlists_container.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.playlists_container.customContextMenuRequested.connect(self.show_container_context_menu)
+
         self.playlists_layout = QVBoxLayout(self.playlists_container)
         self.playlists_layout.setContentsMargins(0, 0, 0, 0)
         self.playlists_layout.setSpacing(10)
@@ -121,6 +131,13 @@ class Playlist(QWidget):
             self.save_playlists()
             self.populate_playlists()
 
+            # Створюємо плейлист в основній бібліотеці
+            if hasattr(self.library, 'create_playlist'):
+                try:
+                    self.library.create_playlist(name)
+                except Exception:
+                    pass
+
             QMessageBox.information(self, "Success", f"Playlist '{name}' created!")
 
     def populate_playlists(self):
@@ -134,9 +151,45 @@ class Playlist(QWidget):
         for playlist in self.playlists:
             item = self.create_playlist_item(playlist)
             self.playlists_layout.addWidget(item)
+        self.playlists_layout.addStretch()
+
+    def filter_playlists(self, text):
+        """Фільтрація плейлистів за текстом"""
+        for i in range(self.playlists_layout.count()):
+            item = self.playlists_layout.itemAt(i)
+            if not item:
+                continue
+            widget = item.widget()
+            if widget:
+                playlist_name = widget.property('playlist_name')
+                if playlist_name:
+                    widget.setVisible(text.lower() in playlist_name.lower())
+
+    def get_first_track_cover(self, playlist_name):
+        """Отримує обкладинку першого трека в плейлисті (QPixmap або None)"""
+        try:
+            if hasattr(self.library, 'playlists') and playlist_name in self.library.playlists:
+                track_ids = self.library.playlists[playlist_name]
+                if track_ids:
+                    first_track_id = track_ids[0]
+                    if hasattr(self.library, 'get_track_by_id'):
+                        track = self.library.get_track_by_id(first_track_id)
+                    else:
+                        track = None
+                    if track and track.get('cover_path'):
+                        cover_path = track['cover_path']
+                        if cover_path and os.path.exists(cover_path):
+                            pix = QPixmap(cover_path)
+                            if not pix.isNull():
+                                return pix
+        except Exception:
+            pass
+        return None
 
     def create_playlist_item(self, playlist):
+        """Створення віджета для одного плейлиста (тепер з контекстним меню на весь елемент)"""
         item = QFrame()
+        item.setProperty('playlist_name', playlist['name'])
         item.setStyleSheet("""
             QFrame {
                 background-color: rgba(24, 24, 24, 0.7);
@@ -146,41 +199,64 @@ class Playlist(QWidget):
                 background-color: rgba(40, 40, 40, 0.85);
             }
         """)
-        item.setFixedHeight(60)
+        item.setMinimumHeight(70)
         item.setCursor(Qt.PointingHandCursor)
+
+        # Дозволяємо контекстне меню для всього елементу
+        item.setContextMenuPolicy(Qt.CustomContextMenu)
+        item.customContextMenuRequested.connect(lambda pos, p=playlist, w=item: self.show_playlist_context_menu_at(w, pos, p))
 
         layout = QHBoxLayout(item)
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(10)
 
-        # Іконка плейлисту з градієнтом
+        # Іконка плейлиста - обкладинка першого трека або градієнт
         icon_size = QSize(50, 50)
         icon_label = QLabel()
         icon_label.setFixedSize(icon_size)
+        icon_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-        pixmap = QPixmap(icon_size)
-        pixmap.fill(Qt.transparent)
+        # Спробуємо отримати обкладинку першого трека
+        cover_pixmap = self.get_first_track_cover(playlist["name"])
 
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
+        if cover_pixmap and not cover_pixmap.isNull():
+            # Використовуємо обкладинку першого трека, обрізаємо в квадрат
+            cover_pixmap = cover_pixmap.scaled(icon_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            # Обрізка до центру, щоб виглядало як квадратна обкладинка
+            w = cover_pixmap.width()
+            h = cover_pixmap.height()
+            side = min(w, h)
+            x = (w - side) // 2
+            y = (h - side) // 2
+            cover_pixmap = cover_pixmap.copy(x, y, side, side)
+            cover_pixmap = cover_pixmap.scaled(icon_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            icon_label.setPixmap(cover_pixmap)
+        else:
+            # Градієнт на основі кольору плейлиста
+            pixmap = QPixmap(icon_size)
+            pixmap.fill(Qt.transparent)
 
-        # Градієнт на основі кольору плейлиста
-        gradient = QLinearGradient(0, 0, icon_size.width(), icon_size.height())
-        gradient.setColorAt(0, QColor(*playlist["color"]))
-        gradient.setColorAt(1, QColor(playlist["color"][0] // 2,
-                                      playlist["color"][1] // 2,
-                                      playlist["color"][2] // 2))
-        painter.setBrush(QBrush(gradient))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(0, 0, icon_size.width(), icon_size.height(), 10, 10)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
 
-        # Нотка
-        note_color = QColor(255, 255, 255, 200)
-        painter.setBrush(QBrush(note_color))
-        painter.drawEllipse(15, 15, 20, 20)
-        painter.end()
+            gradient = QLinearGradient(0, 0, icon_size.width(), icon_size.height())
+            base = playlist.get("color", [100, 100, 100])
+            gradient.setColorAt(0, QColor(*base))
+            gradient.setColorAt(1, QColor(max(0, base[0] // 2),
+                                          max(0, base[1] // 2),
+                                          max(0, base[2] // 2)))
+            painter.setBrush(QBrush(gradient))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(0, 0, icon_size.width(), icon_size.height(), 10, 10)
 
-        icon_label.setPixmap(pixmap)
+            # Нотка
+            note_color = QColor(255, 255, 255, 200)
+            painter.setBrush(QBrush(note_color))
+            painter.drawEllipse(15, 15, 20, 20)
+            painter.end()
+
+            icon_label.setPixmap(pixmap)
+
         layout.addWidget(icon_label)
 
         # Назва і кількість треків
@@ -190,7 +266,15 @@ class Playlist(QWidget):
         name_label.setStyleSheet("color: white;")
         text_layout.addWidget(name_label)
 
-        count_label = QLabel(f"{playlist['count']} tracks")
+        # Отримуємо кількість треків з основної бібліотеки
+        track_count = 0
+        if hasattr(self.library, 'playlists') and playlist["name"] in self.library.playlists:
+            try:
+                track_count = len(self.library.playlists[playlist["name"]])
+            except Exception:
+                track_count = 0
+
+        count_label = QLabel(f"{track_count} tracks")
         count_label.setFont(QFont("Arial", 10))
         count_label.setStyleSheet("color: #b3b3b3;")
         text_layout.addWidget(count_label)
@@ -198,11 +282,167 @@ class Playlist(QWidget):
         layout.addLayout(text_layout)
         layout.addStretch()
 
+        # Кнопка контекстного меню (алтернативний спосіб)
+        context_btn = QPushButton("⋮")
+        context_btn.setFixedSize(30, 30)
+        context_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: white;
+                border: none;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.1);
+                border-radius: 5px;
+            }
+        """)
+        context_btn.clicked.connect(lambda _, p=playlist, btn=context_btn: self.show_playlist_context_menu(p, btn.mapToGlobal(QPoint(0, btn.height()))))
+        layout.addWidget(context_btn)
+
+        # Обробка кліку на плейлист (лівий клік)
+        def mousePressEvent(event, p=playlist):
+            if event.button() == Qt.LeftButton:
+                self.on_playlist_clicked(p)
+            else:
+                # для інших кнопок ми дозволяємо стандартну поведінку (контекстне меню раніше обробляється)
+                event.ignore()
+
+        item.mousePressEvent = mousePressEvent
+
         return item
 
+    def on_playlist_clicked(self, playlist):
+        """Обробка кліку на плейлист"""
+        self.playlist_clicked.emit(playlist["name"])
+
+        # Перемикаємо головне вікно на домашню сторінку
+        if hasattr(self.main_window, 'show_page'):
+            try:
+                self.main_window.show_page("home")
+            except Exception:
+                pass
+
+        # Оновлюємо домашню сторінку
+        if hasattr(self.main_window, 'page_home'):
+            try:
+                self.main_window.page_home.on_playlist_changed(playlist["name"])
+            except Exception:
+                pass
+
+    def show_playlist_context_menu(self, playlist, pos):
+        """Показує контекстне меню для плейлиста (позиція в глобальних координатах)"""
+        menu = QMenu(self)
+
+        play_action = QAction("Play", menu)
+        rename_action = QAction("Rename", menu)
+        delete_action = QAction("Delete", menu)
+        export_action = QAction("Export...", menu)
+
+        menu.addAction(play_action)
+        menu.addAction(rename_action)
+        menu.addAction(delete_action)
+        menu.addSeparator()
+        menu.addAction(export_action)
+
+        action = menu.exec_(pos)
+
+        if action == play_action:
+            self.on_playlist_clicked(playlist)
+        elif action == rename_action:
+            self.rename_playlist(playlist)
+        elif action == delete_action:
+            self.delete_playlist(playlist)
+        elif action == export_action:
+            self.export_playlist(playlist)
+
+    def show_playlist_context_menu_at(self, widget, local_pos, playlist):
+        """Показує контекстне меню для елемента плейлиста (локальна позиція віджета)"""
+        global_pos = widget.mapToGlobal(local_pos)
+        self.show_playlist_context_menu(playlist, global_pos)
+
+    def show_container_context_menu(self, local_pos):
+        """Контекстне меню контейнера (глобальні дії: New, Refresh, Import, Export all)"""
+        global_pos = self.playlists_container.mapToGlobal(local_pos)
+        menu = QMenu(self)
+
+        new_action = QAction("New Playlist", menu)
+        refresh_action = QAction("Refresh", menu)
+        import_action = QAction("Import Playlists...", menu)
+        export_all_action = QAction("Export All Playlists...", menu)
+
+        menu.addAction(new_action)
+        menu.addAction(refresh_action)
+        menu.addSeparator()
+        menu.addAction(import_action)
+        menu.addAction(export_all_action)
+
+        action = menu.exec_(global_pos)
+
+        if action == new_action:
+            self.create_new_playlist()
+        elif action == refresh_action:
+            self.refresh_playlists()
+        elif action == import_action:
+            self.import_playlists()
+        elif action == export_all_action:
+            self.export_all_playlists()
+
+    def rename_playlist(self, playlist):
+        """Перейменування плейлиста"""
+        new_name, ok = QInputDialog.getText(self, "Rename Playlist",
+                                            "Enter new name:",
+                                            text=playlist["name"])
+        if ok and new_name:
+            old_name = playlist["name"]
+            if any(p['name'].lower() == new_name.lower() and p is not playlist for p in self.playlists):
+                QMessageBox.warning(self, "Error", "Another playlist with this name already exists!")
+                return
+
+            playlist["name"] = new_name
+
+            # Оновлюємо в основній бібліотеці
+            if hasattr(self.library, 'rename_playlist'):
+                try:
+                    self.library.rename_playlist(old_name, new_name)
+                except Exception:
+                    pass
+
+            self.save_playlists()
+            self.populate_playlists()
+            QMessageBox.information(self, "Success", f"Playlist renamed to '{new_name}'")
+
+    def delete_playlist(self, playlist):
+        """Видалення плейлиста"""
+        reply = QMessageBox.question(self, "Delete Playlist",
+                                     f"Are you sure you want to delete '{playlist['name']}'?",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            # Видаляємо з основної бібліотеки
+            if hasattr(self.library, 'delete_playlist'):
+                try:
+                    self.library.delete_playlist(playlist["name"])
+                except Exception:
+                    pass
+
+            try:
+                self.playlists.remove(playlist)
+            except ValueError:
+                pass
+            self.save_playlists()
+            self.populate_playlists()
+            QMessageBox.information(self, "Success", f"Playlist '{playlist['name']}' deleted")
+
+    def refresh_playlists(self):
+        """Оновлює список плейлистів"""
+        self.playlists = self.load_playlists()
+        self.populate_playlists()
+
     def apply_settings(self, settings):
+        """Застосувати налаштування (тема тощо)"""
         self.settings = settings
-        theme = settings.value("theme", "dark", type=str)
+        theme = settings.value("theme", "dark", type=str) if hasattr(settings, 'value') else "dark"
 
         # Оновлення стилів відповідно до теми
         for i in range(self.playlists_layout.count()):
@@ -221,3 +461,69 @@ class Playlist(QWidget):
                         else:
                             label.setStyleSheet("color: #555555;")
 
+    # --- Допоміжні методи для імпорту/експорту ---
+    def export_playlist(self, playlist):
+        """Експортувати один плейлист у JSON-файл"""
+        fname, _ = QFileDialog.getSaveFileName(self, "Export Playlist", f"{playlist['name']}.json", "JSON Files (*.json)")
+        if not fname:
+            return
+        try:
+            with open(fname, 'w', encoding='utf-8') as f:
+                json.dump(playlist, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(self, "Export", f"Playlist exported to {fname}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export playlist: {e}")
+
+    def export_all_playlists(self):
+        """Експорт усіх плейлистів у файл"""
+        fname, _ = QFileDialog.getSaveFileName(self, "Export All Playlists", "playlists_export.json", "JSON Files (*.json)")
+        if not fname:
+            return
+        try:
+            with open(fname, 'w', encoding='utf-8') as f:
+                json.dump(self.playlists, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(self, "Export", f"All playlists exported to {fname}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export playlists: {e}")
+
+    def import_playlists(self):
+        """Імпорт плейлистів з JSON (може імпортувати один або список)"""
+        fname, _ = QFileDialog.getOpenFileName(self, "Import Playlists", "", "JSON Files (*.json)")
+        if not fname:
+            return
+        try:
+            with open(fname, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # Підтримка як одного плейлиста, так і списку
+            if isinstance(data, dict):
+                incoming = [data]
+            elif isinstance(data, list):
+                incoming = data
+            else:
+                QMessageBox.warning(self, "Import Error", "File format not recognized.")
+                return
+
+            added = 0
+            for p in incoming:
+                name = p.get('name')
+                if not name:
+                    continue
+                if any(existing['name'].lower() == name.lower() for existing in self.playlists):
+                    continue
+                self.playlists.append(p)
+                # Спробуємо створити в бібліотеці
+                if hasattr(self.library, 'create_playlist'):
+                    try:
+                        self.library.create_playlist(name)
+                    except Exception:
+                        pass
+                added += 1
+
+            if added:
+                self.save_playlists()
+                self.populate_playlists()
+                QMessageBox.information(self, "Import", f"Imported {added} playlists.")
+            else:
+                QMessageBox.information(self, "Import", "No new playlists were imported.")
+        except Exception as e:
+            QMessageBox.warning(self, "Import Error", f"Failed to import playlists: {e}")
