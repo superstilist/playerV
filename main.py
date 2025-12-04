@@ -469,7 +469,7 @@ class MainWindow(QMainWindow):
             border-radius: 16px;
         }
         QFrame#bottomPanel {
-            background: rgba(18,18,20,200);
+            background: rgba(24,24,26,250);
             border-radius: 16px;
         }
 
@@ -712,22 +712,39 @@ class MainWindow(QMainWindow):
         pass
 
     def media_status_changed(self, status):
-        if status == QMediaPlayer.EndOfMedia:
-            self.on_next()
+        try:
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                self.on_next()
+        except Exception:
+            # на всякий випадок — старі версії можуть використовувати інші енуми
+            if status == QMediaPlayer.EndOfMedia:  # запасний варіант
+                self.on_next()
 
     def on_play_pause(self):
-        if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+        state = self.media_player.playbackState()
+
+        if state == QMediaPlayer.PlayingState:
+            # Пауза
             self.media_player.pause()
             self.btn_play.setIcon(QIcon('assets/play.png'))
             self._is_playing = False
+
+        elif state == QMediaPlayer.PausedState:
+            # Продовжити програвання (не перезавантажувати)
+            self.media_player.play()
+            self.btn_play.setIcon(QIcon('assets/pause.png'))
+            self._is_playing = True
+
         else:
-            if self.current_track_index >= 0 and self.current_playlist:
+            # Stopped / NoMedia — починаємо відтворення поточного або першого треку
+            if self.current_playlist and self.current_track_index >= 0:
                 self.play_track(self.current_playlist[self.current_track_index])
+            elif self.current_playlist:
+                # якщо індекс ще не встановлено — 0
+                self.current_track_index = 0
+                self.play_track(self.current_playlist[0])
             else:
-                # Спробуємо відтворити перший трек
-                if self.current_playlist:
-                    self.current_track_index = 0
-                    self.play_track(self.current_playlist[0])
+                QMessageBox.information(self, "Плейлист пустий", "У вибраному плейлисті немає треків.")
 
     def on_prev(self):
         if self.current_playlist:
