@@ -69,90 +69,8 @@ class SettingsPage(QWidget):
         layout.addWidget(settings_frame)
         layout.addStretch()
 
-        # Apply initial styling
-        self.apply_styling()
-
-    def apply_styling(self):
-        if self.settings.value("theme", "dark", type=str) == "dark":
-            self.setStyleSheet("""
-                #settingsFrame {
-                    background-color: #252525;
-                    border-radius: 10px;
-                    border: 1px solid #333;
-                }
-                QLabel {
-                    color: #e0e0e0;
-                }
-                QComboBox, QCheckBox {
-                    background-color: #353535;
-                    color: #e0e0e0;
-                    border: 1px solid #444;
-                    padding: 5px;
-                    border-radius: 4px;
-                }
-                QComboBox::drop-down {
-                    border: none;
-                }
-                QSlider::groove:horizontal {
-                    border: 1px solid #444;
-                    height: 8px;
-                    background: #353535;
-                    margin: 2px 0;
-                    border-radius: 4px;
-                }
-                QSlider::handle:horizontal {
-                    background: #1DB954;
-                    border: 1px solid #179944;
-                    width: 18px;
-                    margin: -2px 0;
-                    border-radius: 9px;
-                }
-                QSlider::handle:horizontal:hover {
-                    background: #1ed760;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                #settingsFrame {
-                    background-color: #ffffff;
-                    border-radius: 10px;
-                    border: 1px solid #ddd;
-                }
-                QLabel {
-                    color: #333333;
-                }
-                QComboBox, QCheckBox {
-                    background-color: #f5f5f5;
-                    color: #333333;
-                    border: 1px solid #ddd;
-                    padding: 5px;
-                    border-radius: 4px;
-                }
-                QComboBox::drop-down {
-                    border: none;
-                }
-                QSlider::groove:horizontal {
-                    border: 1px solid #ddd;
-                    height: 8px;
-                    background: #f5f5f5;
-                    margin: 2px 0;
-                    border-radius: 4px;
-                }
-                QSlider::handle:horizontal {
-                    background: #1DB954;
-                    border: 1px solid #179944;
-                    width: 18px;
-                    margin: -2px 0;
-                    border-radius: 9px;
-                }
-                QSlider::handle:horizontal:hover {
-                    background: #1ed760;
-                }
-            """)
-
     def update_theme(self, text):
         self.settings.setValue("theme", text.lower())
-        self.apply_styling()
         self.apply_callback()
 
     def update_show_sidebar(self, state):
@@ -183,4 +101,3 @@ class SettingsPage(QWidget):
         self.volume_slider.setValue(settings.value("volume", 80, type=int))
         self.language_combo.setCurrentText(settings.value("language", "English", type=str))
         self.auto_scan_check.setChecked(settings.value("auto_scan", True, type=bool))
-        self.apply_styling()

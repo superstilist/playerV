@@ -1,14 +1,12 @@
 import os
 import hashlib
-import io
-import tempfile
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QScrollArea, \
     QPushButton, QHBoxLayout, QMenu, QMessageBox, QInputDialog
 from PySide6.QtCore import Qt, QSize, Signal, QPoint
 from PySide6.QtGui import QPainter, QColor, QBrush, QFont, QPixmap, QLinearGradient, QIcon, QPainterPath
 
-# Для читання вбудованих обкладинок з аудіофайлів
+# For reading embedded cover art from audio files
 try:
     from mutagen import File as MutagenFile
 except Exception:
@@ -16,8 +14,8 @@ except Exception:
 
 
 class HomePage(QWidget):
-    track_selected = Signal(dict)  # Сигнал при виборі трека
-    playlist_selected = Signal(str)  # Сигнал при виборі плейлиста
+    track_selected = Signal(dict)  # Signal when selecting a track
+    playlist_selected = Signal(str)  # Signal when selecting a playlist
 
     def __init__(self, settings, library, main_window):
         super().__init__()
@@ -25,8 +23,8 @@ class HomePage(QWidget):
         self.library = library
         self.main_window = main_window
         self.current_playlist = "Recently Added"
-        self._temp_cover_files = []  # список тимчасових файлів, які ми створюємо при вилученні обкладинок
-        self.context_menu_track = None  # Трек для контекстного меню
+        self._temp_cover_files = []  # list of temporary files created when extracting covers
+        self.context_menu_track = None  # Track for context menu
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(25, 25, 25, 25)
@@ -55,6 +53,8 @@ class HomePage(QWidget):
 
         self.cover_label = QLabel()
         self.cover_label.setAlignment(Qt.AlignCenter)
+        self.cover_label.mouseDoubleClickEvent = self.on_cover_double_clicked
+        self.cover_label.setCursor(Qt.PointingHandCursor)
         cover_layout.addWidget(self.cover_label)
         cover_layout.addWidget(self.cover_frame)
         layout.addWidget(self.cover_container, 0, Qt.AlignCenter)
@@ -63,19 +63,26 @@ class HomePage(QWidget):
         track_layout = QVBoxLayout()
         track_layout.setSpacing(8)
 
+        # Track name label - white color as requested
+        self.track_name_label = QLabel("No track selected")
+        self.track_name_label.setFont(QFont("Arial", 24, QFont.Bold))
+        self.track_name_label.setStyleSheet("color: white;")
+        self.track_name_label.setAlignment(Qt.AlignCenter)
+        track_layout.addWidget(self.track_name_label)
+
         layout.addLayout(track_layout)
 
         # Music Library section
         self.add_music_library_section(layout)
         layout.addStretch()
 
-        # Відображення пісень з поточного плейлиста
+        # Display songs from current playlist
         self.refresh_library()
 
     def add_music_library_section(self, layout):
         rec_title = QLabel("Your Music Library")
         rec_title.setFont(QFont("Arial", 18, QFont.Bold))
-        rec_title.setStyleSheet("color: white; margin-top: 20px;")
+        rec_title.setStyleSheet("color: inherit; margin-top: 20px;")
         layout.addWidget(rec_title)
 
         scroll_area = QScrollArea()
@@ -88,30 +95,6 @@ class HomePage(QWidget):
                 background-color: transparent; 
                 border: none; 
             }
-            QScrollBar:horizontal { 
-                background: #404040; 
-                height: 10px; 
-                border-radius: 5px; 
-            }
-            QScrollBar::handle:horizontal { 
-                background: #606060; 
-                border-radius: 5px; 
-            }
-            QScrollBar::handle:horizontal:hover { 
-                background: #808080; 
-            }
-            QScrollBar:vertical { 
-                background: #404040; 
-                width: 10px; 
-                border-radius: 5px; 
-            }
-            QScrollBar::handle:vertical { 
-                background: #606060; 
-                border-radius: 5px; 
-            }
-            QScrollBar::handle:vertical:hover { 
-                background: #808080; 
-            }
         """)
 
         self.songs_container = QWidget()
@@ -123,31 +106,31 @@ class HomePage(QWidget):
         layout.addWidget(scroll_area)
 
     def refresh_library(self):
-        """Оновлює список пісень з поточного плейлиста"""
-        # Очищаємо контейнер
+        """Update the song list from the current playlist"""
+        # Clear container
         for i in reversed(range(self.songs_layout.count())):
             widget = self.songs_layout.itemAt(i).widget()
             if widget:
                 widget.setParent(None)
 
-        # Отримуємо треки з поточного плейлиста
+        # Get tracks from current playlist
         if self.current_playlist in self.library.playlists:
             tracks = self.library.get_playlist_tracks(self.current_playlist)
         else:
             tracks = self.library.get_all_tracks()
 
-        # Додаємо пісні
+        # Add songs
         for i, song in enumerate(tracks):
             card = self.create_song_card(song)
             row = i // 3
             col = i % 3
             self.songs_layout.addWidget(card, row, col)
 
-        # Оновлюємо обкладинку плейлиста (першого трека)
+        # Update playlist cover (first track)
         self.update_playlist_cover()
 
     def update_playlist_cover(self):
-        """Оновлює обкладинку плейлиста на основі першого трека"""
+        """Update playlist cover based on first track"""
         if self.current_playlist in self.library.playlists:
             tracks = self.library.get_playlist_tracks(self.current_playlist)
             if tracks:
@@ -197,21 +180,21 @@ class HomePage(QWidget):
 
             return rounded
 
-        # Іконка з обкладинкою пісні
+        # Icon with song cover art
         icon_size = QSize(200, 200)
         icon_label = QLabel()
         icon_label.setFixedSize(icon_size)
         icon_label.setAlignment(Qt.AlignCenter)
 
-        # Отримуємо QPixmap для обкладинки (з файлу, з вбудованого тега або з дефолтного генератора)
+        # Get QPixmap for cover (from file, embedded tag or default generator)
         pixmap = self.get_cover_pixmap_for_song(song, icon_size)
-        pixmap = rounded_pixmap(pixmap, radius=10)  # радіус заокруглення
+        pixmap = rounded_pixmap(pixmap, radius=20)  # Standard 20px rounding radius
 
         icon_label.setPixmap(pixmap)
 
         layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
-        # Назва пісні
+        # Song name
         name_label = QLabel(song.get('title', 'Unknown')[:20] + ('...' if len(song.get('title', '')) > 20 else ''))
         name_label.setFont(QFont("Arial", 24, QFont.Bold))
         name_label.setStyleSheet("color: white;")
@@ -219,7 +202,7 @@ class HomePage(QWidget):
         name_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(name_label)
 
-        # Виконавець
+        # Artist
         artist_label = QLabel(song.get('artist', 'Unknown')[:20] + ('...' if len(song.get('artist', '')) > 20 else ''))
         artist_label.setFont(QFont("Arial", 16))
         artist_label.setStyleSheet("color: #b3b3b3;")
@@ -227,31 +210,31 @@ class HomePage(QWidget):
         artist_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(artist_label)
 
-        # Обробка кліку
+        # Handle click
         card.mousePressEvent = lambda event, s=song, p=pixmap: self.on_song_clicked(event, s, p)
 
         return card
 
     def get_cover_pixmap_for_song(self, song, icon_size):
-        """Повертає QPixmap обкладинки для пісні.
-        Послідовність спроб:
-         1) Якщо song['cover_path'] існує на диску — завантажити його.
-         2) Спробувати витягти вбудований артефакт з аудіофайлу (через mutagen).
-         3) Згенерувати дефолтну обкладинку.
+        """Return QPixmap cover for song.
+        Sequence of attempts:
+         1) If song['cover_path'] exists on disk — load it.
+         2) Try to extract embedded artwork from audio file (via mutagen).
+         3) Generate default cover.
         """
-        # 1) файл обкладинки явно вказаний
+        # 1) cover file explicitly specified
         if 'cover_path' in song and song['cover_path'] and os.path.exists(song['cover_path']):
             pixmap = QPixmap(song['cover_path'])
             if not pixmap.isNull():
                 return pixmap.scaled(icon_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
 
-        # 2) Спробувати витягти вбудовану обкладинку з аудіо
+        # 2) Try to extract embedded cover from audio
         audio_path = song.get('file_path') or song.get('path') or song.get('filepath')
         if audio_path and os.path.exists(audio_path) and MutagenFile is not None:
             try:
                 af = MutagenFile(audio_path)
                 if af is not None:
-                    # mp3 (APIC), or ID3; для mp4/m4a/ogg різні теги
+                    # mp3 (APIC), or ID3; for mp4/m4a/ogg different tags
                     pic_data = None
                     if hasattr(af, 'tags') and af.tags is not None:
                         tags = af.tags
@@ -282,28 +265,28 @@ class HomePage(QWidget):
                         if qpix.loadFromData(pic_data):
                             return qpix.scaled(icon_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             except Exception:
-                # мовчазно пропускаємо помилки читання метаданих
+                # silently skip metadata reading errors
                 pass
 
-        # 3) Фолбек — генеруємо дефолтну обкладинку
+        # 3) Fallback — generate default cover
         return self.create_default_cover(song.get('title', 'Unknown'), icon_size)
 
     def create_default_cover(self, title, size):
-        """Створює обкладинку за замовчуванням"""
+        """Create default cover"""
         pixmap = QPixmap(size)
         pixmap.fill(Qt.transparent)
 
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Генеруємо колір на основі хешу назви
+        # Generate color based on title hash
         hash_obj = hashlib.md5(title.encode())
         hash_num = int(hash_obj.hexdigest()[:6], 16)
         r = (hash_num & 0xFF0000) >> 16
         g = (hash_num & 0x00FF00) >> 8
         b = hash_num & 0x0000FF
 
-        # Градієнт фону
+        # Gradient background
         gradient = QLinearGradient(0, 0, size.width(), size.height())
         gradient.setColorAt(0, QColor(r, g, b))
         gradient.setColorAt(1, QColor(r // 2, g // 2, b // 2))
@@ -312,7 +295,7 @@ class HomePage(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(0, 0, size.width(), size.height(), 12, 12)
 
-        # Нотка
+        # Music note
         note_color = QColor(255, 255, 255, 200)
         painter.setBrush(QBrush(note_color))
 
@@ -325,55 +308,128 @@ class HomePage(QWidget):
         painter.end()
         return pixmap
 
-    def on_song_clicked(self, event, song, cover_pixmap):
-        """Обробка кліку на пісню"""
+    def on_cover_double_clicked(self, event):
+        """Handle double-click on cover art to show now playing menu"""
         if event.button() == Qt.LeftButton:
-            # Лівий клік - відтворення
+            self.show_now_playing_menu()
+        super().mouseDoubleClickEvent(event)
+
+    def show_now_playing_menu(self):
+        """Show now playing menu with current track information and controls"""
+        menu = QMenu(self)
+        
+        # Get current track from main window
+        current_track = None
+        if hasattr(self.main_window, 'current_playlist') and hasattr(self.main_window, 'current_track_index'):
+            if (self.main_window.current_playlist and 
+                self.main_window.current_track_index >= 0 and
+                self.main_window.current_track_index < len(self.main_window.current_playlist)):
+                current_track = self.main_window.current_playlist[self.main_window.current_track_index]
+        
+        if current_track:
+            # Track info section
+            info_action = menu.addAction(f"🎵 {current_track.get('title', 'Unknown')}")
+            info_action.setEnabled(False)
+            menu.addAction(f"👤 {current_track.get('artist', 'Unknown Artist')}")
+            info_action2 = menu.addAction(f"💿 {current_track.get('album', 'Unknown Album')}")
+            info_action2.setEnabled(False)
+            menu.addSeparator()
+            
+            # Control actions
+            if hasattr(self.main_window, '_is_playing') and self.main_window._is_playing:
+                pause_action = menu.addAction("⏸️ Pause")
+                pause_action.triggered.connect(self.main_window.on_play_pause)
+            else:
+                play_action = menu.addAction("▶️ Play")
+                play_action.triggered.connect(self.main_window.on_play_pause)
+            
+            prev_action = menu.addAction("⏮️ Previous")
+            prev_action.triggered.connect(self.main_window.on_prev)
+            
+            next_action = menu.addAction("⏭️ Next")
+            next_action.triggered.connect(self.main_window.on_next)
+            
+            menu.addSeparator()
+            
+            # Track actions
+            add_fav_action = menu.addAction("❤️ Add to Favorites")
+            add_fav_action.triggered.connect(lambda: self.add_to_favorites(current_track))
+            
+            remove_action = menu.addAction("🗑️ Remove from playlist")
+            remove_action.triggered.connect(lambda: self.remove_track_from_playlist(current_track))
+        else:
+            # No track playing
+            no_track_action = menu.addAction("🎵 No track currently playing")
+            no_track_action.setEnabled(False)
+            menu.addSeparator()
+            add_music_action = menu.addAction("➕ Add music to library")
+            add_music_action.triggered.connect(self.main_window.add_music_files)
+        
+        # Show menu at cover position
+        pos = self.cover_label.mapToGlobal(self.cover_label.rect().center())
+        menu.exec_(pos)
+
+    def add_to_favorites(self, track):
+        """Add track to favorites playlist"""
+        if hasattr(self.library, 'add_to_playlist'):
+            if self.library.add_to_playlist('Favorites', track['id']):
+                QMessageBox.information(self, "Success", f"'{track['title']}' added to Favorites")
+            else:
+                QMessageBox.warning(self, "Error", "Track already in Favorites")
+
+    def on_song_clicked(self, event, song, cover_pixmap):
+        """Handle song click"""
+        if event.button() == Qt.LeftButton:
+            # Left click - play
             self.play_song(song, cover_pixmap)
         elif event.button() == Qt.RightButton:
-            # Правий клік - контекстне меню
+            # Right click - context menu
             self.show_track_context_menu(song, event.globalPos())
 
     def play_song(self, song, cover_pixmap):
-        """Відтворення пісні"""
-        # Оновлюємо обкладинку
+        """Play song"""
+        # Update cover
         self.update_cover(cover_pixmap)
 
-        # Відправляємо сигнал
+        # Update track name label
+        track_name = song.get('title', 'Unknown')
+        self.track_name_label.setText(track_name)
+
+        # Send signal
         self.track_selected.emit(song)
 
-        # Відтворюємо трек в головному вікні
+        # Play track in main window
         if hasattr(self.main_window, 'play_track_by_id'):
             self.main_window.play_track_by_id(song['id'])
 
     def show_track_context_menu(self, song, global_pos):
-        """Показує контекстне меню для трека"""
+        """Show context menu for track"""
         self.context_menu_track = song
         menu = QMenu(self)
 
-        # Основний пункт меню
-        play_action = menu.addAction("▶ Відтворити")
+        # Main menu item
+        play_action = menu.addAction("▶ Play")
         menu.addSeparator()
 
-        # Пункти для роботи з плейлистами
-        add_to_playlist_action = menu.addAction("➕ Додати до плейлиста...")
-        remove_from_playlist_action = menu.addAction("➖ Видалити з плейлиста")
+        # Items for working with playlists
+        add_to_playlist_action = menu.addAction("➕ Add to playlist...")
+        remove_from_playlist_action = menu.addAction("➖ Remove from playlist")
 
-        # Додаткові пункти
+        # Additional items
         menu.addSeparator()
-        show_info_action = menu.addAction("ℹ Інформація про трек")
-        delete_action = menu.addAction("🗑 Видалити трек з бібліотеки")
+        show_info_action = menu.addAction("ℹ Track info")
+        delete_action = menu.addAction("🗑 Delete track from library")
 
-        # Визначаємо, чи це системний плейлист
+        # Determine if this is a system playlist
         system_playlists = ['Favorites', 'Recently Added', 'Most Played']
         is_system_playlist = self.current_playlist in system_playlists
         remove_from_playlist_action.setEnabled(not is_system_playlist)
 
-        # Обробка вибору пунктів меню
+        # Handle menu item selection
         action = menu.exec_(global_pos)
 
         if action == play_action:
-            self.play_song(song, None)  # cover_pixmap не потрібен, оскільки ми вже на картці
+            self.play_song(song, None)  # cover_pixmap not needed since we're already on the card
         elif action == add_to_playlist_action:
             self.add_track_to_playlist(song)
         elif action == remove_from_playlist_action:
@@ -384,101 +440,122 @@ class HomePage(QWidget):
             self.delete_track_from_library(song)
 
     def add_track_to_playlist(self, track):
-        """Додає трек до плейлиста"""
-        # Отримуємо список плейлистів (крім поточного)
+        """Add track to playlist"""
+        # Get list of playlists (except current)
         playlists = list(self.library.playlists.keys())
         if self.current_playlist in playlists:
             playlists.remove(self.current_playlist)
 
         if not playlists:
-            QMessageBox.information(self, "Немає плейлистів", "Створіть спочатку новий плейлист!")
+            QMessageBox.information(self, "No playlists", "Create a new playlist first!")
             return
 
-        # Діалог вибору плейлиста
+        # Playlist selection dialog
         playlist_name, ok = QInputDialog.getItem(
-            self, "Додати до плейлиста",
-            "Виберіть плейлист:", playlists, 0, False
+            self, "Add to playlist",
+            "Select playlist:", playlists, 0, False
         )
 
         if ok and playlist_name:
             if self.library.add_to_playlist(playlist_name, track['id']):
-                QMessageBox.information(self, "Успішно", f"Трек додано до '{playlist_name}'")
+                QMessageBox.information(self, "Success", f"Track added to '{playlist_name}'")
             else:
-                QMessageBox.warning(self, "Помилка", "Трек вже є у цьому плейлисті!")
+                QMessageBox.warning(self, "Error", "Track already in this playlist!")
 
     def remove_track_from_playlist(self, track):
-        """Видаляє трек з поточного плейлиста"""
+        """Remove track from current playlist"""
         reply = QMessageBox.question(
-            self, "Видалити з плейлиста",
-            f"Видалити '{track['title']}' з '{self.current_playlist}'?",
+            self, "Remove from playlist",
+            f"Remove '{track['title']}' from '{self.current_playlist}'?",
             QMessageBox.Yes | QMessageBox.No
         )
 
         if reply == QMessageBox.Yes:
             if self.library.remove_from_playlist(self.current_playlist, track['id']):
-                # Оновлюємо відображення
+                # Update display
                 self.refresh_library()
-                QMessageBox.information(self, "Успішно", "Трек видалено з плейлиста")
+                QMessageBox.information(self, "Success", "Track removed from playlist")
             else:
-                QMessageBox.warning(self, "Помилка", "Не вдалося видалити трек")
+                QMessageBox.warning(self, "Error", "Failed to remove track")
 
     def show_track_info(self, track):
-        """Показує інформацію про трек"""
+        """Show track info"""
         info_text = f"""
-        <b>Назва:</b> {track.get('title', 'Невідомо')}<br>
-        <b>Виконавець:</b> {track.get('artist', 'Невідомо')}<br>
-        <b>Альбом:</b> {track.get('album', 'Невідомо')}<br>
-        <b>Тривалість:</b> {self.format_duration(track.get('duration', 0))}<br>
-        <b>Жанр:</b> {track.get('genre', 'Невідомо')}<br>
-        <b>Рік:</b> {track.get('year', 'Невідомо')}<br>
-        <b>Кількість відтворень:</b> {track.get('play_count', 0)}<br>
-        <b>Шлях до файлу:</b><br>{track.get('file_path', 'Невідомо')}
+        <b>Title:</b> {track.get('title', 'Unknown')}<br>
+        <b>Artist:</b> {track.get('artist', 'Unknown')}<br>
+        <b>Album:</b> {track.get('album', 'Unknown')}<br>
+        <b>Duration:</b> {self.format_duration(track.get('duration', 0))}<br>
+        <b>Genre:</b> {track.get('genre', 'Unknown')}<br>
+        <b>Year:</b> {track.get('year', 'Unknown')}<br>
+        <b>Play count:</b> {track.get('play_count', 0)}<br>
+        <b>File path:</b><br>{track.get('file_path', 'Unknown')}
         """
 
-        QMessageBox.information(self, "Інформація про трек", info_text)
+        QMessageBox.information(self, "Track info", info_text)
 
     def delete_track_from_library(self, track):
-        """Видаляє трек з бібліотеки"""
+        """Delete track from library"""
         reply = QMessageBox.question(
-            self, "Видалити трек",
-            f"Ви впевнені, що хочете видалити '{track['title']}' з бібліотеки?<br><br>"
-            f"<i>Ця дія також видалить трек з усіх плейлистів!</i>",
+            self, "Delete track",
+            f"Are you sure you want to delete '{track['title']}' from library?<br><br>"
+            f"<i>This will also remove the track from all playlists!</i>",
             QMessageBox.Yes | QMessageBox.No
         )
 
         if reply == QMessageBox.Yes:
-            # Видаляємо трек з усіх плейлистів
+            # Remove track from all playlists
             for playlist_name in list(self.library.playlists.keys()):
                 self.library.remove_from_playlist(playlist_name, track['id'])
 
-            # Видаляємо трек з основного списку
+            # Remove track from main list
             self.library.tracks = [t for t in self.library.tracks if t['id'] != track['id']]
             self.library.save_library()
 
-            # Оновлюємо відображення
+            # Update display
             self.refresh_library()
-            QMessageBox.information(self, "Успішно", "Трек видалено з бібліотеки")
+            QMessageBox.information(self, "Success", "Track deleted from library")
 
     def format_duration(self, seconds):
-        """Форматує тривалість у секундах у читабельний формат"""
+        """Format duration in seconds to readable format"""
         minutes = int(seconds // 60)
         secs = int(seconds % 60)
         return f"{minutes}:{secs:02d}"
 
     def update_cover(self, pixmap):
-        """Оновлення обкладинки на верхній панелі"""
+        """Update cover on top panel"""
         if pixmap:
             scaled_pixmap = pixmap.scaled(
                 self.cover_frame.size() - QSize(20, 20),
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation
             )
-            self.cover_label.setPixmap(scaled_pixmap)
+
+            # Apply rounded corners to cover art as requested
+            def rounded_pixmap(pixmap, radius):
+                size = pixmap.size()
+                rounded = QPixmap(size)
+                rounded.fill(Qt.transparent)
+
+                painter = QPainter(rounded)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+                path = QPainterPath()
+                path.addRoundedRect(0, 0, size.width(), size.height(), radius, radius)
+
+                painter.setClipPath(path)
+                painter.drawPixmap(0, 0, pixmap)
+                painter.end()
+
+                return rounded
+
+            rounded_pixmap_result = rounded_pixmap(scaled_pixmap, radius=20)  # Standard 20px radius for rounded corners
+            self.cover_label.setPixmap(rounded_pixmap_result)
         else:
             self.cover_label.clear()
 
     def on_playlist_changed(self, playlist_name):
-        """Обробляє зміну плейлиста"""
+        """Handle playlist change"""
         self.current_playlist = playlist_name
         self.refresh_library()
 
@@ -490,7 +567,7 @@ class HomePage(QWidget):
 
             theme = settings.value("theme", "dark", type=str)
             if theme == "dark":
-                # Оновлюємо кольори карток
+                # Update card colors
                 for i in range(self.songs_layout.count()):
                     widget = self.songs_layout.itemAt(i).widget()
                     if widget:
@@ -500,7 +577,7 @@ class HomePage(QWidget):
                             else:
                                 label.setStyleSheet("color: #b3b3b3;")
             else:
-                # Оновлюємо кольори карток
+                # Update card colors
                 for i in range(self.songs_layout.count()):
                     widget = self.songs_layout.itemAt(i).widget()
                     if widget:
@@ -513,7 +590,7 @@ class HomePage(QWidget):
             print(f"Error applying settings to home page: {str(e)}")
 
     def cleanup(self):
-        """Очищає тимчасові файли, створені при витягуванні обкладинок"""
+        """Clean temporary files created when extracting covers"""
         for p in self._temp_cover_files:
             try:
                 if os.path.exists(p):

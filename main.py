@@ -19,20 +19,21 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from gui_base.home_page import HomePage
 from gui_base.playist_page import Playlist
 from gui_base.settings_page import SettingsPage
+from gui_base.style import StyleManager, UpperToolBar
 
 SETTINGS_ORG = "PlayerV"
 SETTINGS_APP = "Player"
 
 
-# -----------------------------------------
-# Повний main.py з виправленою анімацією кнопки Play/Pause для всіх елементів
-# -----------------------------------------
-
-
 class RoundedProgressBar(QProgressBar):
-    """Custom QProgressBar that always paints fully rounded ends and minimizes repaints."""
+    """Custom QProgressBar with adjustable corner rounding via radius_factor.
 
-    def __init__(self, parent=None, height: int = 14):
+    radius_factor: fraction of height used for corner radius (0.0..0.5).
+                   0.5 => fully semicircular ends.
+                   0.25 => milder rounding.
+    """
+
+    def __init__(self, parent=None, height: int = 14, radius_factor: float = 0.25):
         super().__init__(parent)
         self.setTextVisible(False)
         self.setRange(0, 1000)
@@ -43,17 +44,33 @@ class RoundedProgressBar(QProgressBar):
         self._bg_color = QColor(60, 60, 60, 200)
         self._grad_colors = [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)]
 
-        # Small optimization: remember last painted value
+        # remember last painted value to minimize repaints
         self._last_painted_value = None
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
+        # rounding control: keep in [0.0, 0.5]
+        try:
+            rf = float(radius_factor)
+        except Exception:
+            rf = 0.25
+        self.radius_factor = max(0.0, min(0.5, rf))
 
     def set_colors(self, bg_color: QColor, grad_colors: list):
         self._bg_color = bg_color
         self._grad_colors = grad_colors
         self.update()
 
+    def set_radius_factor(self, factor: float):
+        """Update radius factor at runtime (0.0..0.5)."""
+        try:
+            f = float(factor)
+        except Exception:
+            return
+        self.radius_factor = max(0.0, min(0.5, f))
+        self.update()
+
     def paintEvent(self, event):
-        # Avoid full repaint if value hasn't changed and event is not a resize
+        # Avoid full repaint if value hasn't changed and event is tiny
         current_value = self.value()
         if self._last_painted_value == current_value and (event.rect().width() == 0 or event.rect().height() == 0):
             return
@@ -62,7 +79,9 @@ class RoundedProgressBar(QProgressBar):
         painter.setRenderHint(QPainter.Antialiasing)
 
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = rect.height() / 2.0
+
+        # Use radius_factor to control how rounded corners are.
+        radius = rect.height() * self.radius_factor
 
         # Draw background rounded rect
         painter.setPen(Qt.NoPen)
@@ -90,7 +109,7 @@ class RoundedProgressBar(QProgressBar):
                 grad.setColorAt(1.0, self._grad_colors[0])
 
             painter.setBrush(QBrush(grad))
-            # Rounded rect ensures circular ends even for fg_width < height
+            # Use same radius for foreground rounded rect to keep consistent look
             painter.drawRoundedRect(fg_rect, radius, radius)
 
         # subtle border for crispness
@@ -516,7 +535,7 @@ class MainWindow(QMainWindow):
 
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.setWindowTitle("PlayerV")
-        self.setMinimumSize(QSize(1100, 700))
+        self.setMinimumSize(QSize(1200, 800))
 
         geom = self.settings.value("window_geometry", None)
         if geom:
@@ -553,15 +572,15 @@ class MainWindow(QMainWindow):
         self._animating = False
         self._anim_timer = None
         self._anim_index = 0
-        self._anim_interval_ms = 40  # frame duration ~25 FPS
-        self._queued_state = None  # 'play' or 'pause' if a click happened during animation
-        self._processing_click = False  # Prevent rapid repeated clicks
+        self._anim_interval_ms = 40
+        self._queued_state = None
+        self._processing_click = False
 
         self.init_ui()
         self.apply_theme()
         self.apply_settings()
 
-        # load animations AFTER ui is created (needs btn_play)
+        # Load animations AFTER ui is created (needs btn_play)
         self.load_play_pause_animations()
 
         self.scan_music_library()
@@ -569,9 +588,7 @@ class MainWindow(QMainWindow):
         self.show_page("home")
 
     def load_play_pause_animations(self):
-        """Завантажує кадри з папок assets/pause-to-play і assets/play-to-pause.
-        Якщо кадри відсутні — використовує статичні іконки.
-        """
+        """Завантажує кадри з папок assets/pause-to-play і assets/play-to-pause."""
 
         def load_dir_frames(folder):
             frames = []
@@ -625,10 +642,7 @@ class MainWindow(QMainWindow):
                 self.btn_play.setIcon(QIcon())
 
     def _animate_frames(self, frames, on_finished_static, direction='forward'):
-        """Play a list of QPixmap frames on the play button at fixed interval.
-        direction: 'forward' or 'reverse' to allow reversing a sequence when needed.
-        on_finished_static: callable to apply final static icon.
-        """
+        """Play a list of QPixmap frames on the play button at fixed interval."""
         if not frames:
             on_finished_static()
             return
@@ -753,13 +767,24 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         central = QWidget()
-        central_layout = QVBoxLayout(central)
-        central_layout.setContentsMargins(14, 14, 14, 14)
-        central_layout.setSpacing(12)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Add Upper Toolbar
+        self.upper_toolbar = UpperToolBar(self)
+        main_layout.addWidget(self.upper_toolbar)
+
+        # Main content area
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(14, 14, 14, 14)
+        content_layout.setSpacing(12)
 
         row = QHBoxLayout()
         row.setSpacing(12)
 
+        # Left panel (playlists)
         self.left_container = QFrame()
         self.left_container.setObjectName("leftPanel")
         self.left_container.setFixedWidth(320)
@@ -768,19 +793,10 @@ class MainWindow(QMainWindow):
         left_layout.setSpacing(8)
 
         left_title_layout = QHBoxLayout()
-        left_title = QLabel("Плейлисти")
+        left_title = QLabel("Playlists")
         left_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
         left_title_layout.addWidget(left_title)
-
-        self.btn_add_music = QPushButton("+ Додати музику")
-        self.btn_add_music.setFixedHeight(30)
-        self.btn_add_music.clicked.connect(self.add_music_files)
-        left_title_layout.addWidget(self.btn_add_music)
-
-        self.btn_refresh = QPushButton("🔄 Оновити")
-        self.btn_refresh.setFixedHeight(30)
-        self.btn_refresh.clicked.connect(self.refresh_library_and_playlists)
-        left_title_layout.addWidget(self.btn_refresh)
+        left_title_layout.addStretch()
 
         left_layout.addLayout(left_title_layout)
 
@@ -800,11 +816,11 @@ class MainWindow(QMainWindow):
         self.playlist_layout.setSpacing(10)
 
         self.playlist_scroll_area.setWidget(self.playlist_container)
-
         left_layout.addWidget(self.playlist_scroll_area)
 
         row.addWidget(self.left_container)
 
+        # Pages container
         self.pages_container = QFrame()
         self.pages_container.setObjectName("pagesPanel")
         pages_layout = QVBoxLayout(self.pages_container)
@@ -822,22 +838,52 @@ class MainWindow(QMainWindow):
         pages_layout.addWidget(self.pages)
         row.addWidget(self.pages_container, 1)
 
-        central_layout.addLayout(row)
+        content_layout.addLayout(row)
 
+        # Bottom player controls
         self.bottom_container = QFrame()
         self.bottom_container.setObjectName("bottomPanel")
         bottom_layout = QHBoxLayout(self.bottom_container)
         bottom_layout.setContentsMargins(12, 8, 12, 8)
-        bottom_layout.setSpacing(10)
+        bottom_layout.setSpacing(15)
 
-        self.current_track_info = QLabel("Виберіть трек")
+        # Cover art widget (less rounded corners now)
+        self.bottom_cover_label = QLabel()
+        self.bottom_cover_label.setFixedSize(60, 60)
+        self.bottom_cover_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(60, 60, 60, 0.8);
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }
+        """)
+        self.bottom_cover_label.setAlignment(Qt.AlignCenter)
+        self.bottom_cover_label.setText("🎵")
+        self.bottom_cover_label.setFont(QFont("Segoe UI", 20))
+        bottom_layout.addWidget(self.bottom_cover_label)
+
+        # Track info
+        track_info_layout = QVBoxLayout()
+        track_info_layout.setSpacing(2)
+
+        self.current_track_info = QLabel("Select a track")
         self.current_track_info.setStyleSheet("""
             color: #ffffff;
             font-size: 14px;
             font-weight: bold;
-            padding: 5px;
+            padding: 0px;
         """)
-        bottom_layout.addWidget(self.current_track_info, 1)
+        track_info_layout.addWidget(self.current_track_info)
+
+        self.current_artist_info = QLabel("")
+        self.current_artist_info.setStyleSheet("""
+            color: #b3b3b3;
+            font-size: 12px;
+            padding: 0px;
+        """)
+        track_info_layout.addWidget(self.current_artist_info)
+
+        bottom_layout.addLayout(track_info_layout, 1)
 
         progress_container = QWidget()
         progress_container.setFixedHeight(50)
@@ -856,15 +902,13 @@ class MainWindow(QMainWindow):
         """)
         progress_layout.addWidget(self.time_elapsed_label)
 
-        # Use custom painted progress bar
-        self.progress_bar = RoundedProgressBar(height=14)
+        # Here you can change radius_factor if you want less/more rounded corners
+        self.progress_bar = RoundedProgressBar(height=14, radius_factor=0.25)
         self.progress_bar.set_colors(QColor(60, 60, 60, 200),
                                      [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
 
-        # Override mouse events to seek media_player directly
         def _mouse_press(event):
             if event.button() == Qt.LeftButton and self._current_duration > 0:
-                # Qt6: event.position() is QPointF
                 x = event.position().x()
                 w = self.progress_bar.width()
                 pct = min(1.0, max(0.0, x / w)) if w > 0 else 0.0
@@ -873,7 +917,6 @@ class MainWindow(QMainWindow):
                     self.media_player.setPosition(seek_pos)
                 except Exception:
                     pass
-                # Set internal progress for instant visual feedback
                 self.progress_bar.setValue(int(pct * (self.progress_bar.maximum() - self.progress_bar.minimum())))
             QProgressBar.mousePressEvent(self.progress_bar, event)
 
@@ -900,48 +943,32 @@ class MainWindow(QMainWindow):
 
         bottom_layout.addWidget(progress_container, 3)
 
+        # Player controls
         controls = QHBoxLayout()
         controls.setSpacing(12)
 
         self.btn_prev = QPushButton()
         self.btn_prev.setIcon(QIcon('assets/back.png'))
-        self.btn_prev.setToolTip("Попередній трек")
+        self.btn_prev.setToolTip("Previous track")
 
         self.btn_play = QPushButton()
         self.btn_play.setIcon(QIcon('assets/play.png'))
-        self.btn_play.setToolTip("Відтворити/Пауза")
+        self.btn_play.setToolTip("Play/Pause")
 
         self.btn_next = QPushButton()
         self.btn_next.setIcon(QIcon('assets/next.png'))
-        self.btn_next.setToolTip("Наступний трек")
+        self.btn_next.setToolTip("Next track")
 
         self.btn_loop = QPushButton()
         self.btn_loop.setIcon(QIcon('assets/loop.png'))
-        self.btn_loop.setToolTip("Увімкнути/вимкнути цикл")
+        self.btn_loop.setToolTip("Toggle loop")
         self.btn_loop.setCheckable(True)
         self._loop_enabled = False
 
         for btn in (self.btn_prev, self.btn_play, self.btn_next, self.btn_loop):
             btn.setFixedSize(44, 44)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet("""
-                QPushButton {
-                    background: rgba(255,255,255,10);
-                    border: 1px solid rgba(255,255,255,15);
-                    border-radius: 22px;
-                }
-                QPushButton:hover {
-                    background: rgba(255,255,255,20);
-                    border-color: rgba(255,255,255,25);
-                }
-                QPushButton:pressed {
-                    background: rgba(255,255,255,5);
-                }
-                QPushButton:checked {
-                    background: rgba(29, 185, 84, 0.6);
-                    border-color: rgba(29, 185, 84, 0.8);
-                }
-            """)
+            btn.setObjectName("playerButton")
 
         self.btn_prev.clicked.connect(self.on_prev)
         self.btn_play.clicked.connect(self.on_play_pause)
@@ -955,94 +982,69 @@ class MainWindow(QMainWindow):
 
         bottom_layout.addLayout(controls)
 
-        central_layout.addWidget(self.bottom_container)
+        content_layout.addWidget(self.bottom_container)
+        main_layout.addWidget(content_widget, 1)
+
         self.setCentralWidget(central)
 
-        self.setStyleSheet(self.build_stylesheet())
+        # Apply unified stylesheet
+        self.apply_stylesheet()
+
         self.update_playlist_panel()
 
         self.playlist_changed.connect(self.page_home.on_playlist_changed)
         self.library_updated.connect(self.page_home.refresh_library)
         self.library_updated.connect(self.update_playlist_panel)
-
         self.progress_updated.connect(self._on_progress_updated)
 
-    def build_stylesheet(self) -> str:
-        return """
-        QWidget {
-            background: transparent;
-            color: #e8e8e8;
-            font-family: "Segoe UI", "Arial", sans-serif;
-            font-size: 12px;
-        }
+    def apply_stylesheet(self):
+        """Apply unified stylesheet from StyleManager"""
+        theme = self.settings.value("theme", "dark", type=str)
+        stylesheet = StyleManager.get_theme_stylesheet(theme)
+        self.setStyleSheet(stylesheet)
 
-        QFrame#leftPanel {
-            background: rgba(30,30,32,180);
-            border-radius: 16px;
-        }
-        QFrame#pagesPanel {
-            background: rgba(24,24,26,180);
-            border-radius: 16px;
-        }
-        QFrame#bottomPanel {
-            background: rgba(24,24,26,250);
-            border-radius: 16px;
-        }
-        QWidget#playlistContainer {
-            background: transparent;
-        }
+        # Update upper toolbar theme
+        if hasattr(self, 'upper_toolbar'):
+            self.upper_toolbar.apply_theme()
 
-        QProgressBar {
-            background: rgba(60, 60, 60, 200);
-            border-radius: 7px;
-            border: none;
-            margin: 0px;
-            padding: 0px;
-        }
-        QProgressBar::chunk {
-            background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
-                stop:0 rgba(29, 185, 84, 1), 
-                stop:0.5 rgba(35, 200, 95, 1),
-                stop:1 rgba(29, 185, 84, 1));
-            border-radius: 7px;
-            border: none;
-            margin: 0px;
-        }
+    def _create_rounded_pixmap(self, source_pixmap, target_size, radius=None):
+        """Return a new QPixmap sized to target_size with rounded corners (filled from source_pixmap).
 
-        QScrollArea {
-            background: transparent;
-            border: none;
-            outline: none;
-        }
-
-        QScrollBar:vertical {
-            background: rgba(255,255,255,10);
-            width: 8px;
-            border-radius: 4px;
-        }
-        QScrollBar::handle:vertical {
-            background: rgba(255,255,255,30);
-            border-radius: 4px;
-            min-height: 20px;
-        }
-        QScrollBar::handle:vertical:hover {
-            background: rgba(255,255,255,50);
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0px;
-        }
-
-        QPushButton {
-            background: rgba(40, 40, 40, 0.8);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            padding: 8px 16px;
-        }
-
-        QPushButton:hover {
-            background: rgba(60, 60, 60, 0.9);
-        }
+        - center-crop semantics so image fills the rounded area without distortion.
+        - If radius is None, use a small rounded radius proportional to size (0.15 * min(w,h)).
         """
+        if source_pixmap is None or source_pixmap.isNull():
+            return QPixmap()
+
+        w = int(target_size.width())
+        h = int(target_size.height())
+        if w <= 0 or h <= 0:
+            return QPixmap()
+
+        out = QPixmap(w, h)
+        out.fill(Qt.transparent)
+
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        if radius is None:
+            r = min(w, h) * 0.15  # small, pleasant rounding (≈9px for 60x60)
+        else:
+            r = float(radius)
+
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0.0, 0.0, float(w), float(h)), r, r)
+
+        painter.setClipPath(path)
+
+        # Scale source to cover the target (center-crop)
+        scaled = source_pixmap.scaled(QSize(w, h), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        sx = (scaled.width() - w) // 2
+        sy = (scaled.height() - h) // 2
+        painter.drawPixmap(-sx, -sy, scaled)
+
+        painter.end()
+        return out
 
     def scan_music_library(self):
         self.scanner = MusicScanner(self.music_dir)
@@ -1058,9 +1060,9 @@ class MainWindow(QMainWindow):
     def add_music_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Виберіть музичні файли",
+            "Select music files",
             "",
-            "Музичні файли (*.mp3 *.wav *.flac *.ogg *.m4a *.aac)"
+            "Music files (*.mp3 *.wav *.flac *.ogg *.m4a *.aac)"
         )
 
         if files:
@@ -1079,15 +1081,15 @@ class MainWindow(QMainWindow):
                     scanner = MusicScanner(self.music_dir)
                     track_info = scanner.extract_track_info(dest_path)
                     if self.library.add_track(track_info):
-                        print(f"Додано: {track_info['title']}")
+                        print(f"Added: {track_info['title']}")
 
                 except Exception as e:
-                    QMessageBox.warning(self, "Помилка", f"Не вдалося додати файл: {e}")
+                    QMessageBox.warning(self, "Error", f"Failed to add file: {e}")
 
             self.update_playlist_panel()
             self.library_updated.emit()
-            QMessageBox.information(self, "Файли додано",
-                                    f"Додано {len(files)} файлів у бібліотеку")
+            QMessageBox.information(self, "Files added",
+                                    f"Added {len(files)} files to library")
 
     def update_playlist_panel(self):
         while self.playlist_layout.count():
@@ -1110,11 +1112,11 @@ class MainWindow(QMainWindow):
         self.update_playlist_selection()
         self.playlist_changed.emit(playlist_name)
 
-        # Визначаємо, чи грає плеєр зараз
+        # Determine if player is currently playing
         was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
 
         if self.current_playlist:
-            # Якщо плеєр вже грає, не анімуємо
+            # If player is already playing, don't animate
             self.play_track(self.current_playlist[0], should_animate=not was_playing)
 
     def update_playlist_selection(self):
@@ -1130,13 +1132,13 @@ class MainWindow(QMainWindow):
 
     def show_playlist_context_menu(self, position):
         menu = QMenu()
-        add_music_action = menu.addAction("Додати музику")
+        add_music_action = menu.addAction("Add music")
         menu.addSeparator()
-        create_playlist_action = menu.addAction("Створити новий плейлист")
+        create_playlist_action = menu.addAction("Create new playlist")
         if self.current_playlist_name:
             menu.addSeparator()
-            rename_action = menu.addAction(f"Перейменувати '{self.current_playlist_name}'")
-            delete_action = menu.addAction(f"Видалити '{self.current_playlist_name}'")
+            rename_action = menu.addAction(f"Rename '{self.current_playlist_name}'")
+            delete_action = menu.addAction(f"Delete '{self.current_playlist_name}'")
         action = menu.exec_(self.playlist_scroll_area.mapToGlobal(position))
         if action == add_music_action:
             self.add_music_files()
@@ -1149,40 +1151,40 @@ class MainWindow(QMainWindow):
                 self.delete_current_playlist()
 
     def create_new_playlist(self):
-        name, ok = QInputDialog.getText(self, "Новий плейлист", "Введіть назву плейлиста:")
+        name, ok = QInputDialog.getText(self, "New playlist", "Enter playlist name:")
         if ok and name:
             if self.library.create_playlist(name):
                 self.update_playlist_panel()
                 self.library_updated.emit()
-                QMessageBox.information(self, "Успішно", f"Плейлист '{name}' створено")
+                QMessageBox.information(self, "Success", f"Playlist '{name}' created")
             else:
-                QMessageBox.warning(self, "Помилка", f"Плейлист '{name}' вже існує")
+                QMessageBox.warning(self, "Error", f"Playlist '{name}' already exists")
 
     def rename_current_playlist(self):
         if not self.current_playlist_name:
             return
         if self.current_playlist_name in ['Favorites', 'Recently Added', 'Most Played']:
-            QMessageBox.warning(self, "Помилка", "Системні плейлисти не можна перейменовувати")
+            QMessageBox.warning(self, "Error", "System playlists cannot be renamed")
             return
-        new_name, ok = QInputDialog.getText(self, "Перейменувати плейлист", "Нова назва:",
+        new_name, ok = QInputDialog.getText(self, "Rename playlist", "New name:",
                                             text=self.current_playlist_name)
         if ok and new_name and new_name != self.current_playlist_name:
             if self.library.rename_playlist(self.current_playlist_name, new_name):
                 self.current_playlist_name = new_name
                 self.update_playlist_panel()
                 self.library_updated.emit()
-                QMessageBox.information(self, "Успішно", f"Плейлист перейменовано на '{new_name}'")
+                QMessageBox.information(self, "Success", f"Playlist renamed to '{new_name}'")
             else:
-                QMessageBox.warning(self, "Помилка", "Не вдалося перейменувати плейлист")
+                QMessageBox.warning(self, "Error", "Failed to rename playlist")
 
     def delete_current_playlist(self):
         if not self.current_playlist_name:
             return
         if self.current_playlist_name in ['Favorites', 'Recently Added', 'Most Played']:
-            QMessageBox.warning(self, "Помилка", "Системні плейлисти не можна видаляти")
+            QMessageBox.warning(self, "Error", "System playlists cannot be deleted")
             return
-        reply = QMessageBox.question(self, "Підтвердження",
-                                     f"Ви впевнені, що хочете видалити плейлист '{self.current_playlist_name}'?",
+        reply = QMessageBox.question(self, "Confirmation",
+                                     f"Are you sure you want to delete playlist '{self.current_playlist_name}'?",
                                      QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
             if self.library.delete_playlist(self.current_playlist_name):
@@ -1190,9 +1192,9 @@ class MainWindow(QMainWindow):
                 self.current_playlist = []
                 self.update_playlist_panel()
                 self.library_updated.emit()
-                QMessageBox.information(self, "Успішно", "Плейлист видалено")
+                QMessageBox.information(self, "Success", "Playlist deleted")
             else:
-                QMessageBox.warning(self, "Помилка", "Не вдалося видалити плейлист")
+                QMessageBox.warning(self, "Error", "Failed to delete playlist")
 
     def _progress_bar_clicked(self, event):
         if event.button() == Qt.LeftButton and self._current_duration > 0:
@@ -1210,18 +1212,20 @@ class MainWindow(QMainWindow):
             self._progress_bar_clicked(event)
 
     def on_playback_state_changed(self, state):
-        # Не перебивати анімацію, якщо вона йде
+        # Don't interrupt animation if it's in progress
         if self._animating:
             return
 
         if state == QMediaPlayer.PlayingState:
             self._is_playing = True
-            # Тільки якщо не анімуємо - встановити статичну іконку
+            # Only set static icon if not animating
             if not self._animating:
                 self._set_pause_icon_static()
             if self.current_playlist and self.current_track_index >= 0:
                 track = self.current_playlist[self.current_track_index]
-                self.current_track_info.setText(f"{track['title']} - {track['artist']}")
+                self.current_track_info.setText(track.get('title', 'Unknown'))
+                self.current_artist_info.setText(track.get('artist', 'Unknown Artist'))
+                self.update_bottom_cover_art(track)
         elif state == QMediaPlayer.PausedState:
             self._is_playing = False
             if not self._animating:
@@ -1275,66 +1279,75 @@ class MainWindow(QMainWindow):
     def _on_progress_updated(self, percentage):
         pass
 
-    def play_track_by_id(self, track_id, should_animate=None):
-        """Відтворює трек за ID з можливістю контролю анімації
+    def update_bottom_cover_art(self, track):
+        """Update cover art in bottom control panel with small corner rounding (not full circle)."""
+        cover_path = track.get('cover_path') if track else None
+        if cover_path and os.path.exists(cover_path):
+            pixmap = QPixmap(cover_path)
+            if not pixmap.isNull():
+                target_size = self.bottom_cover_label.size()
+                # small rounded corners: 15% of min dimension
+                radius = min(target_size.width(), target_size.height()) * 0.15
+                rounded = self._create_rounded_pixmap(pixmap, target_size, radius=radius)
+                self.bottom_cover_label.setPixmap(rounded)
+                self.bottom_cover_label.setText("")
+                self.bottom_cover_label.setAlignment(Qt.AlignCenter)
+                return
 
-        Args:
-            track_id: ID трека для відтворення
-            should_animate: Якщо None - автоматично визначає чи потрібна анімація
-                           Якщо True - завжди анімує
-                           Якщо False - ніколи не анімує
-        """
+        # If no cover art, clear pixmap and show default music note
+        self.bottom_cover_label.setPixmap(QPixmap())
+        self.bottom_cover_label.setText("🎵")
+        self.bottom_cover_label.setFont(QFont("Segoe UI", 20))
+        self.bottom_cover_label.setAlignment(Qt.AlignCenter)
+
+    def play_track_by_id(self, track_id, should_animate=None):
+        """Play track by ID with optional animation control"""
         track = self.library.get_track_by_id(track_id)
         if track:
-            # Шукаємо трек в поточному плейлисті
+            # Find track in current playlist
             for i, t in enumerate(self.current_playlist):
                 if t['id'] == track_id:
                     self.current_track_index = i
                     break
             else:
-                # Якщо трек не знайдено в поточному плейлисті, додаємо його
+                # If track not found in current playlist, add it
                 self.current_track_index = len(self.current_playlist)
                 self.current_playlist.append(track)
 
-            # Якщо should_animate не вказано, визначаємо автоматично
+            # If should_animate not specified, determine automatically
             if should_animate is None:
-                # Анімуємо тільки якщо плеєр не грає
+                # Animate only if player is not playing
                 should_animate = not (self.media_player.playbackState() == QMediaPlayer.PlayingState)
 
             self.play_track(track, should_animate)
 
     def play_track(self, track, should_animate=None):
-        """Play a track with optional animation.
-
-        Args:
-            track: Track to play
-            should_animate: Якщо None - автоматично визначає
-                           Якщо True - завжди анімує
-                           Якщо False - ніколи не анімує
-        """
+        """Play a track with optional animation."""
         self._progress_style_updated = False
         file_url = QUrl.fromLocalFile(track['file_path'])
         self.media_player.setSource(file_url)
         self.progress_bar.setValue(0)
 
-        # Отримуємо поточний стан перед відтворенням
+        # Get current state before playing
         current_state = self.media_player.playbackState()
         self.media_player.play()
 
-        self.current_track_info.setText(f"{track['title']} - {track['artist']}")
+        self.current_track_info.setText(track.get('title', 'Unknown'))
+        self.current_artist_info.setText(track.get('artist', 'Unknown Artist'))
+        self.update_bottom_cover_art(track)
 
-        # Якщо should_animate не вказано, визначаємо автоматично
+        # If should_animate not specified, determine automatically
         if should_animate is None:
-            # Анімуємо тільки якщо плеєр не грає
+            # Animate only if player is not playing
             should_animate = not (current_state == QMediaPlayer.PlayingState)
 
-        # Ключова логіка: якщо трек вже грає - не міняємо іконку
-        # Якщо трек не грає - анімуємо тільки якщо should_animate == True
+        # Key logic: if track is already playing - don't change icon
+        # If track is not playing - animate only if should_animate == True
         if current_state == QMediaPlayer.PlayingState:
-            # Якщо вже граємо, НЕ міняємо іконку взагалі
-            pass  # Не робимо нічого, іконка залишається пауза
+            # If already playing, DON'T change icon at all
+            pass  # Do nothing, icon stays as pause
         else:
-            # Якщо не граємо, анімуємо або ставимо статичну іконку
+            # If not playing, animate or set static icon
             if should_animate:
                 self.animate_to_pause()
             else:
@@ -1362,34 +1375,17 @@ class MainWindow(QMainWindow):
             print(f"Error in media_status_changed: {e}")
 
     def on_next_auto(self, was_playing):
-        """Автоматичний перехід на наступний трек (викликається після закінчення треку)"""
+        """Automatic transition to next track (called after track ends)"""
         if self._animating:
             return
 
         if self.current_playlist:
             self.current_track_index = (self.current_track_index + 1) % len(self.current_playlist)
-            # Якщо трек вже грає, не анімуємо зміну іконки
+            # If track is already playing, don't animate icon change
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def toggle_loop(self, checked):
         self._loop_enabled = checked
-
-    def refresh_library_and_playlists(self):
-        self.btn_refresh.setEnabled(False)
-        self.btn_refresh.setText("Оновлення...")
-        scanner = MusicScanner(self.music_dir)
-        scanner.scan_complete.connect(self._on_refresh_complete)
-        scanner.start()
-
-    def _on_refresh_complete(self, music_data):
-        self.library.tracks.clear()
-        for track in music_data:
-            self.library.add_track(track)
-        self.update_playlist_panel()
-        self.library_updated.emit()
-        self.btn_refresh.setEnabled(True)
-        self.btn_refresh.setText("🔄 Оновити")
-        QMessageBox.information(self, "Оновлено", "Музичну бібліотеку та плейлисти оновлено!")
 
     def on_play_pause(self):
         if self._animating:
@@ -1417,17 +1413,17 @@ class MainWindow(QMainWindow):
                 self.current_track_index = 0
                 self.play_track(self.current_playlist[0])
             else:
-                QMessageBox.information(self, "Плейлист пустий", "У вибраному плейлисті немає треків.")
+                QMessageBox.information(self, "Empty playlist", "Selected playlist has no tracks.")
 
     def on_prev(self):
         if self._animating:
             return
 
         if self.current_playlist:
-            # Визначаємо, чи грає плеєр зараз
+            # Determine if player is currently playing
             was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
             self.current_track_index = (self.current_track_index - 1) % len(self.current_playlist)
-            # Якщо трек вже грає, не анімуємо зміну іконки
+            # If track is already playing, don't animate icon change
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def on_next(self):
@@ -1435,15 +1431,15 @@ class MainWindow(QMainWindow):
             return
 
         if self.current_playlist:
-            # Визначаємо, чи грає плеєр зараз
+            # Determine if player is currently playing
             was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
             self.current_track_index = (self.current_track_index + 1) % len(self.current_playlist)
-            # Якщо трек вже грає, не анімуємо зміну іконки
+            # If track is already playing, don't animate icon change
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def on_track_double_clicked(self, track_id):
-        """Викликається при подвійному кліку на трек у списку"""
-        # Визначаємо, чи грає плеєр зараз
+        """Called when double-clicking a track in the list"""
+        # Determine if player is currently playing
         was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
         self.play_track_by_id(track_id, should_animate=not was_playing)
 
@@ -1506,17 +1502,18 @@ class MainWindow(QMainWindow):
                 """)
 
     def apply_theme(self):
+        """Apply theme to the application"""
         theme = self.settings.value("theme", "dark", type=str)
-        pal = QPalette()
+
+        # Apply palette and stylesheet
+        StyleManager.apply_application_theme(QApplication.instance(), theme)
+        self.apply_stylesheet()
+
+        # Update progress bar theme
         if theme == "dark":
-            pal.setColor(QPalette.Window, QColor(18, 18, 18))
-            pal.setColor(QPalette.WindowText, QColor(230, 230, 230))
             self.update_progress_bar_theme("dark")
         else:
-            pal.setColor(QPalette.Window, QColor(245, 245, 245))
-            pal.setColor(QPalette.WindowText, QColor(30, 30, 30))
             self.update_progress_bar_theme("light")
-        QApplication.setPalette(pal)
 
     def show_page(self, page: str):
         if page == "home":
@@ -1535,6 +1532,7 @@ class MainWindow(QMainWindow):
                 pass
 
     def apply_settings(self):
+        """Apply settings to all pages"""
         try:
             self.page_home.apply_settings(self.settings)
         except Exception:
@@ -1543,6 +1541,13 @@ class MainWindow(QMainWindow):
             self.page_playlist_page.apply_settings(self.settings)
         except Exception:
             pass
+        try:
+            self.page_settings.apply_settings(self.settings)
+        except Exception:
+            pass
+
+        # Re-apply theme
+        self.apply_theme()
 
     def closeEvent(self, event):
         # Stop all animations
