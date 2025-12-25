@@ -544,7 +544,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        self.music_dir = 'music'
+        self.music_dir = '../../PycharmProjects/playerV/music'
         if not os.path.exists(self.music_dir):
             os.makedirs(self.music_dir)
 
