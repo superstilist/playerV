@@ -1,4 +1,8 @@
 # PlayerV
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+
+![Stars](https://img.shields.io/github/stars/superstilist/playerV)
+
 
 ![PlayerV Logo](app_ico.png)
 
@@ -83,21 +87,26 @@ The application uses a modern and vibrant color scheme:
 - `bar/`: Progress bar component
   - `RoundedProgressBar.py`: Custom rounded progress bar component
 
+
 ## Getting Started
 
-1. Clone the repository
-2. Install the required dependencies:
+1. **Clone the repository**
+2. ```bash
+   git clone https://github.com/superstilist/playerV.git
+   cd playerV
+   ```
+2. **Install the required dependencies:**
    ```bash
    pip install PySide6 python-vlc mutagen
    ```
-3. Run the application:
+3. **Run the application:**
    ```bash
    python main.py
    ```
 
 ## Dependencies
 
-- Python 3.x
+- **Python 3.x**
 - PySide6 (Qt for Python)
 - VLC (for VLC audio engine)
 - Mutagen (for audio metadata extraction)
