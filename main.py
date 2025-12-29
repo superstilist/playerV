@@ -685,19 +685,16 @@ class MainWindow(QMainWindow):
         left_layout.setSpacing(8)
 
         left_title_layout = QHBoxLayout()
-        left_title = QLabel("Плейлисти")
+        left_title = QLabel("playlist")
         left_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
         left_title_layout.addWidget(left_title)
 
-        self.btn_add_music = QPushButton("+ Додати музику")
+        self.btn_add_music = QPushButton("add music")
         self.btn_add_music.setFixedHeight(30)
         self.btn_add_music.clicked.connect(self.add_music_files)
         left_title_layout.addWidget(self.btn_add_music)
 
-        self.btn_refresh = QPushButton("🔄 Оновити")
-        self.btn_refresh.setFixedHeight(30)
-        self.btn_refresh.clicked.connect(self.refresh_library_and_playlists)
-        left_title_layout.addWidget(self.btn_refresh)
+
 
         left_layout.addLayout(left_title_layout)
 
@@ -747,7 +744,7 @@ class MainWindow(QMainWindow):
         bottom_layout.setContentsMargins(12, 8, 12, 8)
         bottom_layout.setSpacing(10)
 
-        self.current_track_info = QLabel("Виберіть трек")
+        self.current_track_info = QLabel("choice track")
         self.current_track_info.setStyleSheet("""
             color: #ffffff;
             font-size: 14px;
@@ -1268,12 +1265,7 @@ class MainWindow(QMainWindow):
     def toggle_loop(self, checked):
         self._loop_enabled = checked
 
-    def refresh_library_and_playlists(self):
-        self.btn_refresh.setEnabled(False)
-        self.btn_refresh.setText("Оновлення...")
-        scanner = MusicScanner(self.music_dir)
-        scanner.scan_complete.connect(self._on_refresh_complete)
-        scanner.start()
+
 
     def _on_refresh_complete(self, music_data):
         self.library.tracks.clear()
