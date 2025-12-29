@@ -13,13 +13,11 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(25, 25, 25, 25)
         layout.setSpacing(20)
 
-        # Title
         title = QLabel("Settings")
         title.setFont(QFont("Arial", 24, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        # Settings container
         settings_frame = QFrame()
         settings_frame.setObjectName("settingsFrame")
         form_layout = QFormLayout(settings_frame)
@@ -27,40 +25,34 @@ class SettingsPage(QWidget):
         form_layout.setHorizontalSpacing(20)
         form_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Theme selection
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Dark", "Light"])
         self.theme_combo.setCurrentText(settings.value("theme", "Dark", type=str).capitalize())
         self.theme_combo.currentTextChanged.connect(self.update_theme)
         form_layout.addRow("Theme:", self.theme_combo)
 
-        # Cover art visibility
         self.show_cover_check = QCheckBox("Show cover art")
         self.show_cover_check.setChecked(settings.value("show_cover", True, type=bool))
         self.show_cover_check.stateChanged.connect(self.update_show_cover)
         form_layout.addRow("", self.show_cover_check)
 
-        # Sidebar visibility
         self.show_sidebar_check = QCheckBox("Show sidebar")
         self.show_sidebar_check.setChecked(settings.value("show_sidebar", True, type=bool))
         self.show_sidebar_check.stateChanged.connect(self.update_show_sidebar)
         form_layout.addRow("", self.show_sidebar_check)
 
-        # Volume
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(settings.value("volume", 80, type=int))
         self.volume_slider.valueChanged.connect(self.update_volume)
         form_layout.addRow("Volume:", self.volume_slider)
 
-        # Language
         self.language_combo = QComboBox()
         self.language_combo.addItems(["English", "Українська"])
         self.language_combo.setCurrentText(settings.value("language", "English", type=str))
         self.language_combo.currentTextChanged.connect(self.update_language)
         form_layout.addRow("Language:", self.language_combo)
 
-        # Auto scan
         self.auto_scan_check = QCheckBox("Auto scan on startup")
         self.auto_scan_check.setChecked(settings.value("auto_scan", True, type=bool))
         self.auto_scan_check.stateChanged.connect(self.update_auto_scan)

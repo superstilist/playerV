@@ -6,7 +6,6 @@ from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QFrame, QGraphicsDro
 from PySide6.QtCore import Qt, QSize, Signal, QPoint
 from PySide6.QtGui import QPainter, QColor, QBrush, QFont, QPixmap, QLinearGradient, QIcon, QPainterPath
 
-# For reading embedded cover art from audio files
 try:
     from mutagen import File as MutagenFile
 except Exception:
@@ -14,8 +13,8 @@ except Exception:
 
 
 class HomePage(QWidget):
-    track_selected = Signal(dict)  # Signal when selecting a track
-    playlist_selected = Signal(str)  # Signal when selecting a playlist
+    track_selected = Signal(dict)
+    playlist_selected = Signal(str)
 
     def __init__(self, settings, library, main_window):
         super().__init__()
@@ -23,14 +22,13 @@ class HomePage(QWidget):
         self.library = library
         self.main_window = main_window
         self.current_playlist = "Recently Added"
-        self._temp_cover_files = []  # list of temporary files created when extracting covers
-        self.context_menu_track = None  # Track for context menu
+        self._temp_cover_files = []
+        self.context_menu_track = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(25, 25, 25, 25)
         layout.setSpacing(20)
 
-        # Cover art section
         self.cover_container = QWidget()
         cover_layout = QVBoxLayout(self.cover_container)
         cover_layout.setContentsMargins(0, 0, 0, 0)
@@ -59,11 +57,9 @@ class HomePage(QWidget):
         cover_layout.addWidget(self.cover_frame)
         layout.addWidget(self.cover_container, 0, Qt.AlignCenter)
 
-        # Track info
         track_layout = QVBoxLayout()
         track_layout.setSpacing(8)
 
-        # Track name label - white color as requested
         self.track_name_label = QLabel("No track selected")
         self.track_name_label.setFont(QFont("Arial", 24, QFont.Bold))
         self.track_name_label.setStyleSheet("color: white;")
@@ -72,11 +68,9 @@ class HomePage(QWidget):
 
         layout.addLayout(track_layout)
 
-        # Music Library section
         self.add_music_library_section(layout)
         layout.addStretch()
 
-        # Display songs from current playlist
         self.refresh_library()
 
     def add_music_library_section(self, layout):
@@ -107,26 +101,22 @@ class HomePage(QWidget):
 
     def refresh_library(self):
         """Update the song list from the current playlist"""
-        # Clear container
         for i in reversed(range(self.songs_layout.count())):
             widget = self.songs_layout.itemAt(i).widget()
             if widget:
                 widget.setParent(None)
 
-        # Get tracks from current playlist
         if self.current_playlist in self.library.playlists:
             tracks = self.library.get_playlist_tracks(self.current_playlist)
         else:
             tracks = self.library.get_all_tracks()
 
-        # Add songs
         for i, song in enumerate(tracks):
             card = self.create_song_card(song)
             row = i // 3
             col = i % 3
             self.songs_layout.addWidget(card, row, col)
 
-        # Update playlist cover (first track)
         self.update_playlist_cover()
 
     def update_playlist_cover(self):
@@ -180,21 +170,18 @@ class HomePage(QWidget):
 
             return rounded
 
-        # Icon with song cover art
         icon_size = QSize(200, 200)
         icon_label = QLabel()
         icon_label.setFixedSize(icon_size)
         icon_label.setAlignment(Qt.AlignCenter)
 
-        # Get QPixmap for cover (from file, embedded tag or default generator)
         pixmap = self.get_cover_pixmap_for_song(song, icon_size)
-        pixmap = rounded_pixmap(pixmap, radius=20)  # Standard 20px rounding radius
+        pixmap = rounded_pixmap(pixmap, radius=20)
 
         icon_label.setPixmap(pixmap)
 
         layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
-        # Song name
         name_label = QLabel(song.get('title', 'Unknown')[:20] + ('...' if len(song.get('title', '')) > 20 else ''))
         name_label.setFont(QFont("Arial", 24, QFont.Bold))
         name_label.setStyleSheet("color: white;")
@@ -202,7 +189,6 @@ class HomePage(QWidget):
         name_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(name_label)
 
-        # Artist
         artist_label = QLabel(song.get('artist', 'Unknown')[:20] + ('...' if len(song.get('artist', '')) > 20 else ''))
         artist_label.setFont(QFont("Arial", 16))
         artist_label.setStyleSheet("color: #b3b3b3;")
@@ -210,7 +196,6 @@ class HomePage(QWidget):
         artist_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(artist_label)
 
-        # Handle click
         card.mousePressEvent = lambda event, s=song, p=pixmap: self.on_song_clicked(event, s, p)
 
         return card
@@ -222,23 +207,19 @@ class HomePage(QWidget):
          2) Try to extract embedded artwork from audio file (via mutagen).
          3) Generate default cover.
         """
-        # 1) cover file explicitly specified
         if 'cover_path' in song and song['cover_path'] and os.path.exists(song['cover_path']):
             pixmap = QPixmap(song['cover_path'])
             if not pixmap.isNull():
                 return pixmap.scaled(icon_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
 
-        # 2) Try to extract embedded cover from audio
         audio_path = song.get('file_path') or song.get('path') or song.get('filepath')
         if audio_path and os.path.exists(audio_path) and MutagenFile is not None:
             try:
                 af = MutagenFile(audio_path)
                 if af is not None:
-                    # mp3 (APIC), or ID3; for mp4/m4a/ogg different tags
                     pic_data = None
                     if hasattr(af, 'tags') and af.tags is not None:
                         tags = af.tags
-                        # APIC frame (mp3)
                         if 'APIC:' in str(tags):
                             for key in tags.keys():
                                 if key.startswith('APIC'):
@@ -246,13 +227,10 @@ class HomePage(QWidget):
                                     if pic and hasattr(pic, 'data'):
                                         pic_data = pic.data
                                         break
-                        # For MP4/M4A
                         if pic_data is None and hasattr(af, 'pictures') and af.pictures:
                             pic_data = af.pictures[0].data
-                        # For ID3v2 common access
                         if pic_data is None:
                             try:
-                                # some containers keep 'covr' or 'metadata_block_picture'
                                 if 'covr' in tags:
                                     covr = tags.get('covr')
                                     if covr:
@@ -265,10 +243,8 @@ class HomePage(QWidget):
                         if qpix.loadFromData(pic_data):
                             return qpix.scaled(icon_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             except Exception:
-                # silently skip metadata reading errors
                 pass
 
-        # 3) Fallback — generate default cover
         return self.create_default_cover(song.get('title', 'Unknown'), icon_size)
 
     def create_default_cover(self, title, size):
@@ -279,14 +255,12 @@ class HomePage(QWidget):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Generate color based on title hash
         hash_obj = hashlib.md5(title.encode())
         hash_num = int(hash_obj.hexdigest()[:6], 16)
         r = (hash_num & 0xFF0000) >> 16
         g = (hash_num & 0x00FF00) >> 8
         b = hash_num & 0x0000FF
 
-        # Gradient background
         gradient = QLinearGradient(0, 0, size.width(), size.height())
         gradient.setColorAt(0, QColor(r, g, b))
         gradient.setColorAt(1, QColor(r // 2, g // 2, b // 2))
@@ -295,7 +269,6 @@ class HomePage(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(0, 0, size.width(), size.height(), 12, 12)
 
-        # Music note
         note_color = QColor(255, 255, 255, 200)
         painter.setBrush(QBrush(note_color))
 
@@ -317,55 +290,49 @@ class HomePage(QWidget):
     def show_now_playing_menu(self):
         """Show now playing menu with current track information and controls"""
         menu = QMenu(self)
-        
-        # Get current track from main window
+
         current_track = None
         if hasattr(self.main_window, 'current_playlist') and hasattr(self.main_window, 'current_track_index'):
-            if (self.main_window.current_playlist and 
-                self.main_window.current_track_index >= 0 and
-                self.main_window.current_track_index < len(self.main_window.current_playlist)):
+            if (self.main_window.current_playlist and
+                    self.main_window.current_track_index >= 0 and
+                    self.main_window.current_track_index < len(self.main_window.current_playlist)):
                 current_track = self.main_window.current_playlist[self.main_window.current_track_index]
-        
+
         if current_track:
-            # Track info section
             info_action = menu.addAction(f"🎵 {current_track.get('title', 'Unknown')}")
             info_action.setEnabled(False)
             menu.addAction(f"👤 {current_track.get('artist', 'Unknown Artist')}")
             info_action2 = menu.addAction(f"💿 {current_track.get('album', 'Unknown Album')}")
             info_action2.setEnabled(False)
             menu.addSeparator()
-            
-            # Control actions
+
             if hasattr(self.main_window, '_is_playing') and self.main_window._is_playing:
                 pause_action = menu.addAction("⏸️ Pause")
                 pause_action.triggered.connect(self.main_window.on_play_pause)
             else:
                 play_action = menu.addAction("▶️ Play")
                 play_action.triggered.connect(self.main_window.on_play_pause)
-            
+
             prev_action = menu.addAction("⏮️ Previous")
             prev_action.triggered.connect(self.main_window.on_prev)
-            
+
             next_action = menu.addAction("⏭️ Next")
             next_action.triggered.connect(self.main_window.on_next)
-            
+
             menu.addSeparator()
-            
-            # Track actions
+
             add_fav_action = menu.addAction("❤️ Add to Favorites")
             add_fav_action.triggered.connect(lambda: self.add_to_favorites(current_track))
-            
+
             remove_action = menu.addAction("🗑️ Remove from playlist")
             remove_action.triggered.connect(lambda: self.remove_track_from_playlist(current_track))
         else:
-            # No track playing
             no_track_action = menu.addAction("🎵 No track currently playing")
             no_track_action.setEnabled(False)
             menu.addSeparator()
             add_music_action = menu.addAction("➕ Add music to library")
             add_music_action.triggered.connect(self.main_window.add_music_files)
-        
-        # Show menu at cover position
+
         pos = self.cover_label.mapToGlobal(self.cover_label.rect().center())
         menu.exec_(pos)
 
@@ -380,25 +347,19 @@ class HomePage(QWidget):
     def on_song_clicked(self, event, song, cover_pixmap):
         """Handle song click"""
         if event.button() == Qt.LeftButton:
-            # Left click - play
             self.play_song(song, cover_pixmap)
         elif event.button() == Qt.RightButton:
-            # Right click - context menu
             self.show_track_context_menu(song, event.globalPos())
 
     def play_song(self, song, cover_pixmap):
         """Play song"""
-        # Update cover
         self.update_cover(cover_pixmap)
 
-        # Update track name label
         track_name = song.get('title', 'Unknown')
         self.track_name_label.setText(track_name)
 
-        # Send signal
         self.track_selected.emit(song)
 
-        # Play track in main window
         if hasattr(self.main_window, 'play_track_by_id'):
             self.main_window.play_track_by_id(song['id'])
 
@@ -407,29 +368,24 @@ class HomePage(QWidget):
         self.context_menu_track = song
         menu = QMenu(self)
 
-        # Main menu item
         play_action = menu.addAction("▶ Play")
         menu.addSeparator()
 
-        # Items for working with playlists
         add_to_playlist_action = menu.addAction("➕ Add to playlist...")
         remove_from_playlist_action = menu.addAction("➖ Remove from playlist")
 
-        # Additional items
         menu.addSeparator()
         show_info_action = menu.addAction("ℹ Track info")
         delete_action = menu.addAction("🗑 Delete track from library")
 
-        # Determine if this is a system playlist
         system_playlists = ['Favorites', 'Recently Added', 'Most Played']
         is_system_playlist = self.current_playlist in system_playlists
         remove_from_playlist_action.setEnabled(not is_system_playlist)
 
-        # Handle menu item selection
         action = menu.exec_(global_pos)
 
         if action == play_action:
-            self.play_song(song, None)  # cover_pixmap not needed since we're already on the card
+            self.play_song(song, None)
         elif action == add_to_playlist_action:
             self.add_track_to_playlist(song)
         elif action == remove_from_playlist_action:
@@ -441,7 +397,6 @@ class HomePage(QWidget):
 
     def add_track_to_playlist(self, track):
         """Add track to playlist"""
-        # Get list of playlists (except current)
         playlists = list(self.library.playlists.keys())
         if self.current_playlist in playlists:
             playlists.remove(self.current_playlist)
@@ -450,7 +405,6 @@ class HomePage(QWidget):
             QMessageBox.information(self, "No playlists", "Create a new playlist first!")
             return
 
-        # Playlist selection dialog
         playlist_name, ok = QInputDialog.getItem(
             self, "Add to playlist",
             "Select playlist:", playlists, 0, False
@@ -472,7 +426,6 @@ class HomePage(QWidget):
 
         if reply == QMessageBox.Yes:
             if self.library.remove_from_playlist(self.current_playlist, track['id']):
-                # Update display
                 self.refresh_library()
                 QMessageBox.information(self, "Success", "Track removed from playlist")
             else:
@@ -503,15 +456,12 @@ class HomePage(QWidget):
         )
 
         if reply == QMessageBox.Yes:
-            # Remove track from all playlists
             for playlist_name in list(self.library.playlists.keys()):
                 self.library.remove_from_playlist(playlist_name, track['id'])
 
-            # Remove track from main list
             self.library.tracks = [t for t in self.library.tracks if t['id'] != track['id']]
             self.library.save_library()
 
-            # Update display
             self.refresh_library()
             QMessageBox.information(self, "Success", "Track deleted from library")
 
@@ -530,7 +480,6 @@ class HomePage(QWidget):
                 Qt.SmoothTransformation
             )
 
-            # Apply rounded corners to cover art as requested
             def rounded_pixmap(pixmap, radius):
                 size = pixmap.size()
                 rounded = QPixmap(size)
@@ -549,7 +498,7 @@ class HomePage(QWidget):
 
                 return rounded
 
-            rounded_pixmap_result = rounded_pixmap(scaled_pixmap, radius=20)  # Standard 20px radius for rounded corners
+            rounded_pixmap_result = rounded_pixmap(scaled_pixmap, radius=20)
             self.cover_label.setPixmap(rounded_pixmap_result)
         else:
             self.cover_label.clear()
@@ -567,7 +516,6 @@ class HomePage(QWidget):
 
             theme = settings.value("theme", "dark", type=str)
             if theme == "dark":
-                # Update card colors
                 for i in range(self.songs_layout.count()):
                     widget = self.songs_layout.itemAt(i).widget()
                     if widget:
@@ -577,7 +525,6 @@ class HomePage(QWidget):
                             else:
                                 label.setStyleSheet("color: #b3b3b3;")
             else:
-                # Update card colors
                 for i in range(self.songs_layout.count()):
                     widget = self.songs_layout.itemAt(i).widget()
                     if widget:

@@ -1,9 +1,4 @@
-"""
-Centralized Styling System for PlayerV
 
-This module provides a unified styling system for the entire application,
-including theme management, style generation, and the upper toolbar.
-"""
 
 from PySide6.QtCore import Qt, QSize, QSettings
 from PySide6.QtGui import QFont, QColor, QPalette
@@ -13,7 +8,6 @@ from PySide6.QtWidgets import (
     QComboBox, QSlider, QCheckBox
 )
 
-# Settings organization
 SETTINGS_ORG = "PlayerV"
 SETTINGS_APP = "Player"
 
@@ -34,14 +28,12 @@ class SettingsDialog(QDialog):
         layout = DialogLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
-        
-        # Title
+
         title = QLabel("Settings")
         title.setFont(QFont("Segoe UI", 16, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
-        
-        # Theme selection
+
         theme_label = QLabel("Theme:")
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Dark", "Light"])
@@ -53,8 +45,7 @@ class SettingsDialog(QDialog):
         theme_layout.addWidget(self.theme_combo)
         theme_layout.addStretch()
         layout.addLayout(theme_layout)
-        
-        # Volume control
+
         volume_label = QLabel("Volume:")
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
@@ -66,8 +57,7 @@ class SettingsDialog(QDialog):
         volume_layout.addWidget(self.volume_slider)
         volume_layout.addStretch()
         layout.addLayout(volume_layout)
-        
-        # Language selection
+
         lang_label = QLabel("Language:")
         self.lang_combo = QComboBox()
         self.lang_combo.addItems(["English", "Ukrainian"])
@@ -79,16 +69,14 @@ class SettingsDialog(QDialog):
         lang_layout.addWidget(self.lang_combo)
         lang_layout.addStretch()
         layout.addLayout(lang_layout)
-        
-        # Auto scan checkbox
+
         self.auto_scan_check = QCheckBox("Auto scan music library on startup")
         self.auto_scan_check.setChecked(self.settings.value("auto_scan", True, type=bool))
         self.auto_scan_check.stateChanged.connect(self.update_auto_scan)
         layout.addWidget(self.auto_scan_check)
         
         layout.addStretch()
-        
-        # Close button
+
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
         close_btn.setFixedHeight(35)
@@ -249,11 +237,8 @@ class UpperToolBar(QFrame):
         self.main_window = main_window
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
-        # Назвaти об'єкта — буде корисно якщо захочете таргетити стилями
         self.setObjectName("upperPanel")
 
-        # Не робимо повну прозорість — використовуємо напівпрозорий фон
-        # (але темніший ніж раніше).
         self.init_ui()
         self.apply_theme()
 
@@ -262,10 +247,8 @@ class UpperToolBar(QFrame):
 
         layout.setSpacing(15)
 
-        # App name/logo - клікабельний
         self.app_title = QLabel("PlayerV")
         self.app_title.setFont(QFont("Segoe UI", 18, QFont.Bold))
-        # Кольор тексту встановлюється у apply_theme, сюди ставимо fallback
         self.app_title.setStyleSheet("color: #ffffff;")
         self.app_title.setCursor(Qt.PointingHandCursor)
         self.app_title.mousePressEvent = self.on_app_title_clicked
@@ -273,13 +256,11 @@ class UpperToolBar(QFrame):
 
         layout.addStretch()
 
-        # Add Music button
         self.btn_add_music = QPushButton("+ Add Music")
         self.btn_add_music.setFixedHeight(35)
         self.btn_add_music.setCursor(Qt.PointingHandCursor)
         layout.addWidget(self.btn_add_music)
 
-        # Settings button
         self.btn_settings = QPushButton("⚙")
         self.btn_settings.setFixedSize(35, 35)
         self.btn_settings.setCursor(Qt.PointingHandCursor)
@@ -287,7 +268,6 @@ class UpperToolBar(QFrame):
         self.btn_settings.setObjectName("settingsButton")
         layout.addWidget(self.btn_settings)
 
-        # Connect signals (main_window має відповідні методи)
         try:
             self.btn_add_music.clicked.connect(self.main_window.add_music_files)
         except Exception:
@@ -365,7 +345,6 @@ class UpperToolBar(QFrame):
                 }
             """)
         else:
-            # Легка тема — також панельного вигляду, але світліше
             self.setStyleSheet("""
                 QFrame#upperPanel {
                     background: rgba(250, 250, 250, 230);

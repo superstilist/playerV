@@ -1,4 +1,3 @@
-# main.py
 import sys
 import os
 import json
@@ -6,528 +5,38 @@ import shutil
 import hashlib
 from pathlib import Path
 from datetime import datetime
+from collections import OrderedDict
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QProgressBar, QPushButton, QLabel, QFrame,
-    QFileDialog, QMessageBox, QMenu, QInputDialog, QListWidget, QListWidgetItem,
-    QScrollArea, QSizePolicy
+    QFileDialog, QMessageBox, QMenu, QInputDialog,
+    QScrollArea
 )
-from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal, QObject, QUrl, QRectF, QPropertyAnimation, \
-    QEasingCurve
-from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPixmap, QPainter, QBrush, QLinearGradient, QPainterPath
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal
+from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPixmap
 
-# try to import vlc (python-vlc). If not available, we'll fallback to QtMultimedia QMediaPlayer.
+from engine_sound.AudioEngineQt import AudioEngineQt
+from engine_sound.AudioEngineVLC import AudioEngineVLC
+from gui_base.bar.RoundedProgressBar import RoundedProgressBar
+
 try:
-    import vlc  # type: ignore
+    import vlc
 
     _HAVE_VLC = True
 except Exception:
     _HAVE_VLC = False
 
-# Import QtMultimedia for fallback
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from gui_base.home_page import HomePage
-from gui_base.playist_page import Playlist
+from gui_base.playist_page import Playlist, PlaylistItem
 from gui_base.settings_page import SettingsPage
 
 SETTINGS_ORG = "PlayerV"
 SETTINGS_APP = "Player"
 
 
-# -----------------------
-# Audio engine wrappers
-# -----------------------
-class AudioEngineVLC(QObject):
-    """Audio engine using python-vlc with Qt-friendly signals."""
-    position_changed = Signal(int)  # ms
-    duration_changed = Signal(int)  # ms
-    state_changed = Signal(str)  # 'playing', 'paused', 'stopped'
-    end_of_media = Signal()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.instance = vlc.Instance()
-        self.player = self.instance.media_player_new()
-        self._media = None
-        self._duration = 0
-        self._position = 0
-
-        # event manager
-        self._em = self.player.event_manager()
-        # attach events
-        self._em.event_attach(vlc.EventType.MediaPlayerTimeChanged, self._on_time_changed)
-        self._em.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_end_reached)
-        self._em.event_attach(vlc.EventType.MediaPlayerPaused, self._on_state_changed)
-        self._em.event_attach(vlc.EventType.MediaPlayerPlaying, self._on_state_changed)
-        self._em.event_attach(vlc.EventType.MediaPlayerStopped, self._on_state_changed)
-
-    def _on_time_changed(self, event):
-        # pollable - emit current time
-        try:
-            t = self.player.get_time()
-            if t is None: t = 0
-            self.position_changed.emit(max(0, int(t)))
-        except Exception:
-            pass
-
-    def _on_end_reached(self, event):
-        # ended
-        self.end_of_media.emit()
-
-    def _on_state_changed(self, event):
-        # map to simple states
-        st = self.player.get_state()
-        if st == vlc.State.Playing:
-            self.state_changed.emit('playing')
-        elif st == vlc.State.Paused:
-            self.state_changed.emit('paused')
-        elif st in (vlc.State.Ended, vlc.State.Stopped):
-            self.state_changed.emit('stopped')
-
-    def set_source(self, file_path):
-        try:
-            media = self.instance.media_new(str(file_path))
-            # parse media metadata asynchronously (may help duration)
-            try:
-                media.parse_with_options(vlc.MediaParseFlag.parse_local, timeout=0)
-            except Exception:
-                pass
-            self.player.set_media(media)
-            self._media = media
-            # after setting media, length may appear only after play/parse
-            # we'll poll duration externally from MainWindow
-        except Exception as e:
-            print("VLC set_source error:", e)
-
-    def play(self):
-        try:
-            self.player.play()
-        except Exception as e:
-            print("VLC play error:", e)
-
-    def pause(self):
-        try:
-            self.player.pause()
-        except Exception as e:
-            print("VLC pause error:", e)
-
-    def stop(self):
-        try:
-            self.player.stop()
-        except Exception as e:
-            print("VLC stop error:", e)
-
-    def set_position(self, ms):
-        try:
-            # set_time expects ms
-            self.player.set_time(int(ms))
-        except Exception:
-            pass
-
-    def get_position(self):
-        try:
-            t = self.player.get_time()
-            return t if t and t != -1 else 0
-        except Exception:
-            return 0
-
-    def get_duration(self):
-        try:
-            d = self.player.get_length()
-            return d if d and d != -1 else 0
-        except Exception:
-            return 0
-
-
-class AudioEngineQt(QObject):
-    """Fallback audio engine that wraps QMediaPlayer to provide same signals."""
-    position_changed = Signal(int)
-    duration_changed = Signal(int)
-    state_changed = Signal(str)
-    end_of_media = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.player = QMediaPlayer()
-        self.audio_output = QAudioOutput()
-        self.player.setAudioOutput(self.audio_output)
-        self.player.positionChanged.connect(self._on_position)
-        self.player.durationChanged.connect(self._on_duration)
-        self.player.mediaStatusChanged.connect(self._on_media_status)
-        self.player.playbackStateChanged.connect(self._on_playback_state)
-
-    def set_source(self, file_path):
-        try:
-            url = QUrl.fromLocalFile(file_path)
-            self.player.setSource(url)
-        except Exception as e:
-            print("QtAudio set_source error:", e)
-
-    def play(self):
-        try:
-            self.player.play()
-        except Exception as e:
-            print("QtAudio play error:", e)
-
-    def pause(self):
-        try:
-            self.player.pause()
-        except Exception as e:
-            print("QtAudio pause error:", e)
-
-    def stop(self):
-        try:
-            self.player.stop()
-        except Exception as e:
-            print("QtAudio stop error:", e)
-
-    def set_position(self, ms):
-        try:
-            self.player.setPosition(int(ms))
-        except Exception:
-            pass
-
-    def get_position(self):
-        try:
-            return int(self.player.position())
-        except Exception:
-            return 0
-
-    def get_duration(self):
-        try:
-            return int(self.player.duration())
-        except Exception:
-            return 0
-
-    def _on_position(self, pos):
-        self.position_changed.emit(int(pos))
-
-    def _on_duration(self, dur):
-        self.duration_changed.emit(int(dur))
-
-    def _on_playback_state(self, state):
-        if state == QMediaPlayer.PlayingState:
-            self.state_changed.emit('playing')
-        elif state == QMediaPlayer.PausedState:
-            self.state_changed.emit('paused')
-        else:
-            self.state_changed.emit('stopped')
-
-    def _on_media_status(self, status):
-        # EndOfMedia handled by playbackState/duration logic sometimes; emit end if ended
-        from PySide6.QtMultimedia import QMediaPlayer as QMP
-        if status == QMP.MediaStatus.EndOfMedia:
-            self.end_of_media.emit()
-
-
-# -----------------------------------------
-# Повний main.py (оновлено)
-# -----------------------------------------
-
-class RoundedProgressBar(QProgressBar):
-    """Custom QProgressBar that always paints fully rounded ends and minimizes repaints."""
-
-    def __init__(self, parent=None, height: int = 14):
-        super().__init__(parent)
-        self.setTextVisible(False)
-        self.setRange(0, 1000)
-        self.setValue(0)
-        self.setFixedHeight(height)
-
-        # Colors - smoother gradient
-        self._bg_color = QColor(70, 70, 70, 180)
-        self._grad_colors = [
-            QColor(29, 185, 84),  # Bright green
-            QColor(45, 210, 110),  # Lighter green
-            QColor(29, 185, 84)  # Back to bright green
-        ]
-
-        # Add glow effect colors for active state
-        self._glow_color = QColor(29, 185, 84, 80)
-        self._is_active = False
-
-        # Small optimization: remember last painted value
-        self._last_painted_value = None
-        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
-
-    def set_colors(self, bg_color: QColor, grad_colors: list):
-        self._bg_color = bg_color
-        self._grad_colors = grad_colors
-        self.update()
-
-    def set_active(self, active: bool):
-        self._is_active = active
-        self.update()
-
-    def paintEvent(self, event):
-        # Avoid full repaint if value hasn't changed and event is not a resize
-        current_value = self.value()
-        if self._last_painted_value == current_value and (event.rect().width() == 0 or event.rect().height() == 0):
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = rect.height() / 2.0
-
-        # Draw subtle glow when active
-        if self._is_active:
-            glow_rect = rect.adjusted(-1, -1, 1, 1)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(self._glow_color))
-            painter.drawRoundedRect(glow_rect, radius + 1, radius + 1)
-
-        # Draw background rounded rect with subtle gradient
-        painter.setPen(Qt.NoPen)
-        bg_grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        bg_grad.setColorAt(0, QColor(60, 60, 60, 220))
-        bg_grad.setColorAt(1, QColor(80, 80, 80, 220))
-        painter.setBrush(QBrush(bg_grad))
-        painter.drawRoundedRect(rect, radius, radius)
-
-        # Draw foreground (chunk) with smooth gradient
-        minimum = self.minimum()
-        maximum = self.maximum()
-        if maximum > minimum and current_value > minimum:
-            ratio = (current_value - minimum) / (maximum - minimum)
-            fg_width = max(2.0, rect.width() * ratio)
-            fg_rect = QRectF(rect.x(), rect.y(), fg_width, rect.height())
-
-            grad = QLinearGradient(fg_rect.topLeft(), fg_rect.topRight())
-            if len(self._grad_colors) >= 3:
-                grad.setColorAt(0.0, self._grad_colors[0])
-                grad.setColorAt(0.3, self._grad_colors[1])
-                grad.setColorAt(0.7, self._grad_colors[1])
-                grad.setColorAt(1.0, self._grad_colors[2])
-            elif len(self._grad_colors) == 2:
-                grad.setColorAt(0.0, self._grad_colors[0])
-                grad.setColorAt(1.0, self._grad_colors[1])
-            else:
-                grad.setColorAt(0.0, self._grad_colors[0])
-                grad.setColorAt(1.0, self._grad_colors[0])
-
-            painter.setBrush(QBrush(grad))
-            # Rounded rect ensures circular ends even for fg_width < height
-            painter.drawRoundedRect(fg_rect, radius, radius)
-
-            # Add subtle highlight on top
-            highlight_rect = fg_rect.adjusted(0, 0, 0, -fg_rect.height() * 0.7)
-            highlight_grad = QLinearGradient(highlight_rect.topLeft(), highlight_rect.bottomLeft())
-            highlight_grad.setColorAt(0, QColor(255, 255, 255, 40))
-            highlight_grad.setColorAt(1, QColor(255, 255, 255, 0))
-            painter.setBrush(QBrush(highlight_grad))
-            painter.drawRoundedRect(fg_rect, radius, radius)
-
-        # subtle border for crispness
-        painter.setPen(QColor(255, 255, 255, 15))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(rect, radius, radius)
-
-        painter.end()
-        self._last_painted_value = current_value
-
-
-class PlaylistItem(QFrame):
-    """Custom widget for displaying a playlist with collage of up to 4 track covers"""
-
-    playlist_clicked = Signal(str, list)  # Emits playlist name and tracks when clicked
-
-    def __init__(self, playlist_name, tracks, library):
-        super().__init__()
-        self.playlist_name = playlist_name
-        self.tracks = tracks
-        self.library = library
-        self._selected = False
-        self.setFixedHeight(200)  # Large playlist items
-        self.setCursor(Qt.PointingHandCursor)
-        self.setObjectName("playlistItem")
-
-        # Animation for hover effect
-        self._hover_animation = QPropertyAnimation(self, b"geometry")
-        self._hover_animation.setDuration(150)
-        self._hover_animation.setEasingCurve(QEasingCurve.OutCubic)
-
-        self.init_ui()
-        self.update_style()
-
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        # Playlist collage (2x2 grid of track covers)
-        self.collage_label = QLabel()
-        self.collage_label.setFixedSize(150, 150)
-        self.collage_label.setAlignment(Qt.AlignCenter)
-        self.collage_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(60, 60, 60, 0.5);
-                border-radius: 10px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }
-        """)
-
-        # Create the collage
-        collage_pixmap = self.create_playlist_collage()
-        self.collage_label.setPixmap(collage_pixmap)
-
-        layout.addWidget(self.collage_label, alignment=Qt.AlignCenter)
-
-        # Playlist title and track count
-        title_layout = QVBoxLayout()
-        title_layout.setSpacing(2)
-
-        # Playlist title
-        title_label = QLabel(self.playlist_name)
-        title_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("color: #ffffff;")
-        title_label.setWordWrap(True)
-        title_layout.addWidget(title_label)
-
-        # Track count
-        track_count = len(self.tracks)
-        count_label = QLabel(f"{track_count} track{'s' if track_count != 1 else ''}")
-        count_label.setFont(QFont("Segoe UI", 9))
-        count_label.setAlignment(Qt.AlignCenter)
-        count_label.setStyleSheet("color: #b3b3b3;")
-        title_layout.addWidget(count_label)
-
-        layout.addLayout(title_layout)
-
-        # Connect click event
-        self.mousePressEvent = self.on_click
-
-    def create_playlist_collage(self):
-        collage_size = QSize(150, 150)
-        cell_size = QSize(72, 72)
-        spacing = 3
-
-        collage = QPixmap(collage_size)
-        collage.fill(Qt.transparent)
-
-        painter = QPainter(collage)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-
-        # Build list of pixmaps or None
-        track_covers = []
-        for track in self.tracks[:4]:
-            cover_path = track.get('cover_path')
-            if cover_path and os.path.exists(cover_path):
-                pixmap = QPixmap(cover_path)
-                if not pixmap.isNull():
-                    track_covers.append(pixmap)
-                    continue
-            track_covers.append(None)
-
-        # Ensure length 4
-        while len(track_covers) < 4:
-            track_covers.append(None)
-
-        positions = [
-            (0, 0), (1, 0),
-            (0, 1), (1, 1)
-        ]
-
-        for i, (row, col) in enumerate(positions):
-            x = col * (cell_size.width() + spacing)
-            y = row * (cell_size.height() + spacing)
-
-            if track_covers[i] is not None:
-                # Scale and draw with rounded clipping using QPainterPath
-                scaled = track_covers[i].scaled(cell_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                # center
-                draw_x = x + (cell_size.width() - scaled.width()) // 2
-                draw_y = y + (cell_size.height() - scaled.height()) // 2
-
-                path = QPainterPath()
-                path.addRoundedRect(draw_x, draw_y, cell_size.width(), cell_size.height(), 8, 8)
-                painter.setClipPath(path)
-                painter.drawPixmap(draw_x, draw_y, scaled)
-                painter.setClipping(False)
-
-                # Add subtle overlay for better text visibility
-                painter.setBrush(QBrush(QColor(0, 0, 0, 30)))
-                painter.setPen(Qt.NoPen)
-                painter.drawRoundedRect(x, y, cell_size.width(), cell_size.height(), 8, 8)
-            else:
-                painter.setBrush(QBrush(QColor(80, 80, 80, 180)))
-                painter.setPen(Qt.NoPen)
-                painter.drawRoundedRect(x, y, cell_size.width(), cell_size.height(), 8, 8)
-
-                painter.setBrush(QBrush(QColor(200, 200, 200, 150)))
-                note_size = 24
-                note_x = x + (cell_size.width() - note_size) // 2
-                note_y = y + (cell_size.height() - note_size) // 2
-                painter.drawEllipse(note_x, note_y, note_size, note_size)
-
-        painter.end()
-        return collage
-
-    def setSelected(self, selected):
-        if self._selected != selected:
-            self._selected = selected
-            self.update_style()
-
-            # Add subtle animation for selection
-            if selected:
-                self.animate_selection()
-
-    def animate_selection(self):
-        """Animate the selection with a subtle pulse effect"""
-        current_geom = self.geometry()
-        self._hover_animation.stop()
-        self._hover_animation.setStartValue(current_geom)
-        self._hover_animation.setEndValue(current_geom.adjusted(-1, -1, 1, 1))
-        self._hover_animation.start()
-
-    def update_style(self):
-        if self._selected:
-            self.setStyleSheet("""
-                QFrame#playlistItem {
-                    background-color: rgba(29, 185, 84, 0.25);
-                    border: 2px solid rgba(29, 185, 84, 0.5);
-                    border-radius: 14px;
-                    margin: 2px;
-                }
-                QFrame#playlistItem:hover {
-                    background-color: rgba(29, 185, 84, 0.35);
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                QFrame#playlistItem {
-                    background-color: rgba(40, 40, 40, 0.8);
-                    border-radius: 14px;
-                    margin: 2px;
-                    border: 2px solid transparent;
-                }
-                QFrame#playlistItem:hover {
-                    background-color: rgba(60, 60, 60, 0.9);
-                    border: 2px solid rgba(255, 255, 255, 0.1);
-                }
-            """)
-
-    def on_click(self, event):
-        if event.button() == Qt.LeftButton:
-            # Add click feedback animation
-            self.animate_click()
-            self.playlist_clicked.emit(self.playlist_name, self.tracks)
-        super().mousePressEvent(event)
-
-    def animate_click(self):
-        """Subtle click animation"""
-        anim = QPropertyAnimation(self, b"geometry")
-        anim.setDuration(100)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        current = self.geometry()
-        anim.setStartValue(current)
-        anim.setEndValue(current.adjusted(0, 1, 0, 1))
-        anim.start()
 
 
 class MusicScanner(QThread):
@@ -539,7 +48,6 @@ class MusicScanner(QThread):
         self.music_dir = music_dir
 
     def run(self):
-        # Optimize scanning: do single traversal and filter extensions
         extensions = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'}
         all_files = []
         root = Path(self.music_dir)
@@ -547,20 +55,24 @@ class MusicScanner(QThread):
             self.scan_complete.emit([])
             return
 
+        total = 0
         for p in root.rglob('*'):
             if p.is_file() and p.suffix.lower() in extensions:
-                all_files.append(p)
+                total += 1
 
-        total = len(all_files)
         self.scan_progress.emit(0, total)
 
         music_data = []
-        for i, file_path in enumerate(all_files):
-            try:
-                music_data.append(self.extract_track_info(file_path))
-            except Exception as e:
-                print(f"Error reading {file_path}: {e}")
-            self.scan_progress.emit(i + 1, total)
+        processed = 0
+        for p in root.rglob('*'):
+            if p.is_file() and p.suffix.lower() in extensions:
+                try:
+                    music_data.append(self.extract_track_info(p))
+                except Exception as e:
+                    print(f"Error reading {p}: {e}")
+                processed += 1
+                if processed % 10 == 0:
+                    self.scan_progress.emit(processed, total)
 
         self.scan_complete.emit(music_data)
 
@@ -588,7 +100,6 @@ class MusicScanner(QThread):
         try:
             audio = MutagenFile(file_path)
             if audio is not None:
-                # Generic tag handling
                 tags = getattr(audio, 'tags', None)
                 if tags:
                     try:
@@ -601,7 +112,6 @@ class MusicScanner(QThread):
                     except Exception:
                         pass
 
-                    # Extract attached pictures (APIC)
                     try:
                         for key in tags.keys():
                             if key.startswith('APIC') or key.lower().startswith('apic'):
@@ -620,11 +130,10 @@ class MusicScanner(QThread):
                     except Exception:
                         pass
 
-                # Fallbacks for other tag formats
                 info = getattr(audio, 'info', None)
                 if info and hasattr(info, 'length'):
                     try:
-                        track['duration'] = int(info.length * 1000)  # keep milliseconds
+                        track['duration'] = int(info.length * 1000)
                     except Exception:
                         pass
 
@@ -808,11 +317,12 @@ class MainWindow(QMainWindow):
         self.current_track_index = -1
         self.current_playlist_name = "Recently Added"
 
-        # playback state boolean - unified regardless of engine
         self._is_playing = False
         self._current_duration = 0
 
-        # choose audio engine (VLC preferred)
+        self._progress_dragging = False
+        self._progress_last_update = 0
+
         if _HAVE_VLC:
             self.audio = AudioEngineVLC(self)
             self._using_vlc = True
@@ -820,9 +330,7 @@ class MainWindow(QMainWindow):
             self.audio = AudioEngineQt(self)
             self._using_vlc = False
 
-        # connect audio signals
         self.audio.position_changed.connect(self.update_progress)
-        # duration may be provided by engine; we'll poll occasionally too
         try:
             self.audio.duration_changed.connect(self.update_duration)
         except Exception:
@@ -830,49 +338,42 @@ class MainWindow(QMainWindow):
         self.audio.state_changed.connect(self.on_playback_state_changed_wrapper)
         self.audio.end_of_media.connect(self._on_end_of_media)
 
-        # poll timer to keep position/duration accurate for engines like vlc
         self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(100)  # Increased frequency for smoother updates
+        self._poll_timer.setInterval(700)
         self._poll_timer.timeout.connect(self._poll_audio_status)
         self._poll_active = False
 
         self._progress_style_updated = False
 
-        # Animation attributes
         self.frames_pause_to_play = []
         self.frames_play_to_pause = []
         self._animating = False
         self._anim_timer = None
         self._anim_index = 0
-        self._anim_interval_ms = 30  # Increased to ~33 FPS for smoother animation
-        self._queued_state = None  # 'play' or 'pause' if a click happened during animation
-        self._processing_click = False  # Prevent rapid repeated clicks
+        self._anim_interval_ms = 40
+        self._queued_state = None
+        self._processing_click = False
 
-        # cover pixmap cache (simple)
-        self._cover_cache = {}
+        self._cover_cache = OrderedDict()
+        self._MAX_COVERS = 50
+
+        self._playlist_widgets = {}
 
         self.init_ui()
         self.apply_theme()
         self.apply_settings()
 
-        # load animations AFTER ui is created (needs btn_play)
         self.load_play_pause_animations()
 
         self.scan_music_library()
 
         self.show_page("home")
 
-    # -------------------
-    # Audio polling & signals
-    # -------------------
     def _poll_audio_status(self):
-        # Poll position and duration only when needed
         try:
             pos = self.audio.get_position()
             dur = self.audio.get_duration()
-            # emit position
             self.update_progress(pos)
-            # if duration available and changed, update
             if dur and dur != self._current_duration:
                 self.update_duration(dur)
         except Exception:
@@ -889,43 +390,28 @@ class MainWindow(QMainWindow):
             self._poll_timer.stop()
 
     def on_playback_state_changed_wrapper(self, state_str):
-        # state_str: 'playing', 'paused', 'stopped'
         if state_str == 'playing':
             self._is_playing = True
             self._start_polling()
-            # Activate progress bar
-            if isinstance(self.progress_bar, RoundedProgressBar):
-                self.progress_bar.set_active(True)
             if not self._animating:
                 self._set_pause_icon_static()
         elif state_str == 'paused':
             self._is_playing = False
-            # keep polling a bit; but you can stop to save CPU
             self._stop_polling()
-            # Deactivate progress bar
-            if isinstance(self.progress_bar, RoundedProgressBar):
-                self.progress_bar.set_active(False)
             if not self._animating:
                 self._set_play_icon_static()
         elif state_str == 'stopped':
             self._is_playing = False
             self._stop_polling()
-            # Deactivate progress bar
-            if isinstance(self.progress_bar, RoundedProgressBar):
-                self.progress_bar.set_active(False)
             if not self._animating:
                 self._set_play_icon_static()
             self.progress_bar.setValue(0)
 
-    # -------------------
-    # play/pause animation helpers (unchanged logic; uses self._is_playing)
-    # -------------------
     def load_play_pause_animations(self):
-        """Завантажує кадри з папок assets/pause-to-play і assets/play-to-pause.
-        Якщо кадри відсутні — використовує статичні іконки.
-        """
 
-        def load_dir_frames(folder):
+        icon_size = QSize(32, 32)
+
+        def load_dir_frames(folder, target_size):
             frames = []
             if not os.path.isdir(folder):
                 return frames
@@ -935,29 +421,28 @@ class MainWindow(QMainWindow):
                 try:
                     pix = QPixmap(full)
                     if not pix.isNull():
-                        frames.append(pix)
+                        scaled_pix = pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        frames.append(scaled_pix)
                 except Exception:
                     pass
             return frames
 
-        self.frames_pause_to_play = load_dir_frames(os.path.join('assets', 'pause-to-play'))
-        self.frames_play_to_pause = load_dir_frames(os.path.join('assets', 'play-to-pause'))
+        self.frames_pause_to_play = load_dir_frames(os.path.join('assets', 'pause-to-play'), icon_size)
+        self.frames_play_to_pause = load_dir_frames(os.path.join('assets', 'play-to-pause'), icon_size)
 
-        # Ensure a reasonable icon size on the button
-        self.btn_play.setIconSize(QSize(32, 32))  # Slightly larger for better visibility
 
-        # Set initial static icon depending on current playback state
+        self.btn_play.setIconSize(icon_size)
+
+
         if self._is_playing:
             self._set_pause_icon_static()
         else:
             self._set_play_icon_static()
 
     def _set_play_icon_static(self):
-        # prefer final frame from pause_to_play if available
+
         if self.frames_pause_to_play:
-            pix = self.frames_pause_to_play[-1].scaled(self.btn_play.iconSize(), Qt.KeepAspectRatio,
-                                                       Qt.SmoothTransformation)
-            self.btn_play.setIcon(QIcon(pix))
+            self.btn_play.setIcon(QIcon(self.frames_pause_to_play[-1]))
         else:
             if os.path.exists('assets/play.png'):
                 self.btn_play.setIcon(QIcon('assets/play.png'))
@@ -966,9 +451,7 @@ class MainWindow(QMainWindow):
 
     def _set_pause_icon_static(self):
         if self.frames_play_to_pause:
-            pix = self.frames_play_to_pause[-1].scaled(self.btn_play.iconSize(), Qt.KeepAspectRatio,
-                                                       Qt.SmoothTransformation)
-            self.btn_play.setIcon(QIcon(pix))
+            self.btn_play.setIcon(QIcon(self.frames_play_to_pause[-1]))
         else:
             if os.path.exists('assets/pause.png'):
                 self.btn_play.setIcon(QIcon('assets/pause.png'))
@@ -976,17 +459,11 @@ class MainWindow(QMainWindow):
                 self.btn_play.setIcon(QIcon())
 
     def _animate_frames(self, frames, on_finished_static, direction='forward'):
-        """Play a list of QPixmap frames on the play button at fixed interval.
-        direction: 'forward' or 'reverse' to allow reversing a sequence when needed.
-        on_finished_static: callable to apply final static icon.
-        """
         if not frames:
             on_finished_static()
             return
 
-        # If already animating — queue desired final state and return
         if self._animating:
-            # Determine desired state
             desired_state = 'pause' if on_finished_static == self._set_pause_icon_static else 'play'
             self._queued_state = desired_state
             return
@@ -994,20 +471,16 @@ class MainWindow(QMainWindow):
         self._animating = True
         self._anim_index = 0
 
-        # Prepare frame list according to direction
         frame_list = frames if direction == 'forward' else list(reversed(frames))
 
-        # Show first frame immediately for instant feedback
         try:
             if frame_list:
-                pix = frame_list[0].scaled(self.btn_play.iconSize(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.btn_play.setIcon(QIcon(pix))
+                self.btn_play.setIcon(QIcon(frame_list[0]))
         except Exception:
             pass
 
         def on_frame():
             if self._anim_index >= len(frame_list):
-                # stop and finalize
                 if self._anim_timer:
                     try:
                         self._anim_timer.stop()
@@ -1017,60 +490,45 @@ class MainWindow(QMainWindow):
 
                 self._animating = False
 
-                # Apply final static icon
                 try:
                     on_finished_static()
                 except Exception:
                     pass
 
-                # Check for queued state
                 if self._queued_state:
                     queued = self._queued_state
                     self._queued_state = None
-                    QTimer.singleShot(30, lambda: self._process_queued_state(queued))
+                    QTimer.singleShot(50, lambda: self._process_queued_state(queued))
                 return
 
             try:
                 if self._anim_index < len(frame_list):
-                    pix = frame_list[self._anim_index].scaled(
-                        self.btn_play.iconSize(),
-                        Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation
-                    )
-                    self.btn_play.setIcon(QIcon(pix))
+                    self.btn_play.setIcon(QIcon(frame_list[self._anim_index]))
             except Exception:
                 pass
 
             self._anim_index += 1
 
-        # Timer for frames
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(on_frame)
         self._anim_timer.start(self._anim_interval_ms)
 
     def _process_queued_state(self, state):
-        """Process queued state after current animation finishes."""
+
         if state == 'play':
-            # Тільки якщо дійсно потрібно змінити на play
             if self._is_playing:
-                # Вже граємо, нічого не робимо
                 return
             self.animate_to_play()
         elif state == 'pause':
-            # Тільки якщо дійсно потрібно змінити на pause
             if not self._is_playing:
-                # Вже на паузі, нічого не робимо
                 return
             self.animate_to_pause()
 
     def animate_to_play(self):
-        # play animation from pause -> play
         if self._animating:
-            # queue final desired state
             self._queued_state = 'play'
             return
 
-        # If there are no animation frames, just set static icon
         if not self.frames_pause_to_play and not self.frames_play_to_pause:
             self._set_play_icon_static()
             return
@@ -1078,18 +536,15 @@ class MainWindow(QMainWindow):
         if self.frames_pause_to_play:
             self._animate_frames(self.frames_pause_to_play, self._set_play_icon_static, direction='forward')
         elif self.frames_play_to_pause:
-            # reverse play->pause to get pause->play visual
             self._animate_frames(self.frames_play_to_pause, self._set_play_icon_static, direction='reverse')
         else:
             self._set_play_icon_static()
 
     def animate_to_pause(self):
-        # play animation from play -> pause
         if self._animating:
             self._queued_state = 'pause'
             return
 
-        # If there are no animation frames, just set static icon
         if not self.frames_play_to_pause and not self.frames_pause_to_play:
             self._set_pause_icon_static()
             return
@@ -1097,19 +552,127 @@ class MainWindow(QMainWindow):
         if self.frames_play_to_pause:
             self._animate_frames(self.frames_play_to_pause, self._set_pause_icon_static, direction='forward')
         elif self.frames_pause_to_play:
-            # reverse pause->play to get play->pause visual
             self._animate_frames(self.frames_pause_to_play, self._set_pause_icon_static, direction='reverse')
         else:
             self._set_pause_icon_static()
 
-    # -------------------
-    # UI init (mostly unchanged)
-    # -------------------
+    def _progress_bar_mouse_press(self, event):
+        if event.button() == Qt.LeftButton:
+            self._progress_dragging = True
+            self.progress_bar.set_dragging(True)
+            self._handle_seek_event(event)
+            event.accept()
+        else:
+            QProgressBar.mousePressEvent(self.progress_bar, event)
+
+    def _progress_bar_mouse_release(self, event):
+        if event.button() == Qt.LeftButton:
+            self._progress_dragging = False
+            self.progress_bar.set_dragging(False)
+            self._handle_seek_event(event)
+            event.accept()
+        else:
+            QProgressBar.mouseReleaseEvent(self.progress_bar, event)
+
+    def _progress_bar_mouse_move(self, event):
+        if self._progress_dragging and (event.buttons() & Qt.LeftButton):
+            self._handle_seek_event(event)
+            event.accept()
+        else:
+            QProgressBar.mouseMoveEvent(self.progress_bar, event)
+
+    def _handle_seek_event(self, event):
+        if self._current_duration <= 0:
+            return
+
+        current_time = datetime.now().timestamp() * 1000
+
+        if current_time - self._progress_last_update < 33:
+            return
+
+        self._progress_last_update = current_time
+
+        x = event.position().x()
+        w = self.progress_bar.width()
+
+        if w <= 0:
+            return
+
+        pct = min(1.0, max(0.0, x / w))
+        seek_pos = int(pct * self._current_duration)
+
+        target_value = int(pct * (self.progress_bar.maximum() - self.progress_bar.minimum()))
+
+        if abs(self.progress_bar.value() - target_value) > 1:
+            self.progress_bar.setValue(target_value)
+            elapsed_seconds = int(seek_pos // 1000)
+            remaining_seconds = int((self._current_duration - seek_pos) // 1000) if self._current_duration > 0 else 0
+            self.time_elapsed_label.setText(self._format_time(elapsed_seconds))
+            self.time_remaining_label.setText(f"-{self._format_time(remaining_seconds)}")
+
+        try:
+            self.audio.set_position(seek_pos)
+        except Exception as e:
+            print(f"Error seeking: {e}")
+
     def init_ui(self):
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(14, 14, 14, 14)
         central_layout.setSpacing(12)
+
+        self.upper_bar = QFrame()
+        self.upper_bar.setObjectName("upperBar")
+        self.upper_bar.setFixedHeight(50)
+        upper_layout = QHBoxLayout(self.upper_bar)
+        upper_layout.setContentsMargins(16, 0, 16, 0)
+        upper_layout.setSpacing(0)
+
+        title_layout = QHBoxLayout()
+        title_layout.setSpacing(12)
+
+        app_icon_label = QLabel()
+        if os.path.exists("app_icon.png"):
+            icon_pixmap = QPixmap("app_icon.png").scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            app_icon_label.setPixmap(icon_pixmap)
+        else:
+            app_icon_label.setText("♫")
+            app_icon_label.setFont(QFont("Segoe UI", 20))
+        app_icon_label.setFixedSize(32, 32)
+        title_layout.addWidget(app_icon_label)
+
+        app_title = QLabel("PlayerV")
+        app_title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        app_title.setStyleSheet("color: #1DB954;")
+        title_layout.addWidget(app_title)
+
+        upper_layout.addLayout(title_layout)
+
+        upper_layout.addStretch()
+
+        self.btn_settings_top = QPushButton()
+        self.btn_settings_top.setIcon(QIcon('assets/settings.png' if os.path.exists('assets/settings.png') else ''))
+        self.btn_settings_top.setToolTip("Налаштування")
+        self.btn_settings_top.setFixedSize(40, 40)
+        self.btn_settings_top.setCursor(Qt.PointingHandCursor)
+        self.btn_settings_top.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,10);
+                border: 1px solid rgba(255,255,255,15);
+                border-radius: 20px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,20);
+                border-color: rgba(255,255,255,25);
+            }
+            QPushButton:pressed {
+                background: rgba(255,255,255,5);
+            }
+        """)
+        self.btn_settings_top.clicked.connect(lambda: self.show_page("settings"))
+        upper_layout.addWidget(self.btn_settings_top)
+
+        central_layout.addWidget(self.upper_bar)
 
         row = QHBoxLayout()
         row.setSpacing(12)
@@ -1203,55 +766,34 @@ class MainWindow(QMainWindow):
         self.time_elapsed_label.setFixedWidth(50)
         self.time_elapsed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.time_elapsed_label.setStyleSheet("""
-            QLabel {
-                color: #ffffff;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 5px;
-            }
+            color: #ffffff;
+            font-size: 12px;
+            font-weight: bold;
+            padding: 5px;
         """)
         progress_layout.addWidget(self.time_elapsed_label)
 
-        # Use custom painted progress bar
         self.progress_bar = RoundedProgressBar(height=14)
-        self.progress_bar.set_colors(QColor(70, 70, 70, 180),
-                                     [QColor(29, 185, 84), QColor(45, 210, 110), QColor(29, 185, 84)])
+        self.progress_bar.set_colors(QColor(60, 60, 60, 200),
+                                     [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
 
-        # Override mouse events to seek audio directly
-        def _mouse_press(event):
-            if event.button() == Qt.LeftButton and self._current_duration > 0:
-                x = event.position().x()
-                w = self.progress_bar.width()
-                pct = min(1.0, max(0.0, x / w)) if w > 0 else 0.0
-                seek_pos = int(pct * self._current_duration)
-                try:
-                    self.audio.set_position(seek_pos)
-                except Exception:
-                    pass
-                # Set internal progress for instant visual feedback
-                self.progress_bar.setValue(int(pct * (self.progress_bar.maximum() - self.progress_bar.minimum())))
-            QProgressBar.mousePressEvent(self.progress_bar, event)
-
-        def _mouse_move(event):
-            if event.buttons() & Qt.LeftButton:
-                _mouse_press(event)
-            QProgressBar.mouseMoveEvent(self.progress_bar, event)
-
-        self.progress_bar.mousePressEvent = _mouse_press
-        self.progress_bar.mouseMoveEvent = _mouse_move
+        self.progress_bar.mousePressEvent = self._progress_bar_mouse_press
+        self.progress_bar.mouseReleaseEvent = self._progress_bar_mouse_release
+        self.progress_bar.mouseMoveEvent = self._progress_bar_mouse_move
         self.progress_bar.setCursor(Qt.PointingHandCursor)
+
+        self.progress_bar.setMouseTracking(False)
+
         progress_layout.addWidget(self.progress_bar, 1)
 
         self.time_remaining_label = QLabel("0:00")
         self.time_remaining_label.setFixedWidth(50)
         self.time_remaining_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.time_remaining_label.setStyleSheet("""
-            QLabel {
-                color: #ffffff;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 5px;
-            }
+            color: #ffffff;
+            font-size: 12px;
+            font-weight: bold;
+            padding: 5px;
         """)
         progress_layout.addWidget(self.time_remaining_label)
 
@@ -1283,21 +825,20 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet("""
                 QPushButton {
-                    background: rgba(255,255,255,15);
-                    border: 1px solid rgba(255,255,255,20);
+                    background: rgba(255,255,255,10);
+                    border: 1px solid rgba(255,255,255,15);
                     border-radius: 22px;
                 }
                 QPushButton:hover {
-                    background: rgba(255,255,255,25);
-                    border-color: rgba(255,255,255,30);
-                    transform: scale(1.05);
+                    background: rgba(255,255,255,20);
+                    border-color: rgba(255,255,255,25);
                 }
                 QPushButton:pressed {
-                    background: rgba(255,255,255,10);
+                    background: rgba(255,255,255,5);
                 }
                 QPushButton:checked {
-                    background: rgba(29, 185, 84, 0.7);
-                    border-color: rgba(29, 185, 84, 0.9);
+                    background: rgba(29, 185, 84, 0.6);
+                    border-color: rgba(29, 185, 84, 0.8);
                 }
             """)
 
@@ -1334,27 +875,30 @@ class MainWindow(QMainWindow):
             font-size: 12px;
         }
 
-        QFrame#leftPanel {
-            background: rgba(30,30,32,200);
+        QFrame#upperBar {
+            background: rgba(24,24,26,220);
             border-radius: 16px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        QFrame#leftPanel {
+            background: rgba(30,30,32,180);
+            border-radius: 16px;
         }
         QFrame#pagesPanel {
-            background: rgba(24,24,26,200);
+            background: rgba(24,24,26,180);
             border-radius: 16px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
         }
         QFrame#bottomPanel {
             background: rgba(24,24,26,250);
             border-radius: 16px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
         }
         QWidget#playlistContainer {
             background: transparent;
         }
 
         QProgressBar {
-            background: rgba(70, 70, 70, 180);
+            background: rgba(60, 60, 60, 200);
             border-radius: 7px;
             border: none;
             margin: 0px;
@@ -1363,8 +907,7 @@ class MainWindow(QMainWindow):
         QProgressBar::chunk {
             background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
                 stop:0 rgba(29, 185, 84, 1), 
-                stop:0.3 rgba(45, 210, 110, 1),
-                stop:0.7 rgba(45, 210, 110, 1),
+                stop:0.5 rgba(35, 200, 95, 1),
                 stop:1 rgba(29, 185, 84, 1));
             border-radius: 7px;
             border: none;
@@ -1399,18 +942,13 @@ class MainWindow(QMainWindow):
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 8px;
             padding: 8px 16px;
-            transition: all 0.2s ease;
         }
 
         QPushButton:hover {
             background: rgba(60, 60, 60, 0.9);
-            border-color: rgba(255, 255, 255, 0.2);
         }
         """
 
-    # -------------------
-    # Library scanning & UI update
-    # -------------------
     def scan_music_library(self):
         self.scanner = MusicScanner(self.music_dir)
         self.scanner.scan_complete.connect(self.on_scan_complete)
@@ -1457,17 +995,54 @@ class MainWindow(QMainWindow):
                                     f"Додано {len(files)} файлів у бібліотеку")
 
     def update_playlist_panel(self):
-        while self.playlist_layout.count():
-            child = self.playlist_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-
         playlists = self.library.playlists
+
+        existing_widgets = {}
+        for i in range(self.playlist_layout.count()):
+            item = self.playlist_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), PlaylistItem):
+                widget = item.widget()
+                existing_widgets[widget.playlist_name] = widget
+
+        for playlist_name in list(existing_widgets.keys()):
+            if playlist_name not in playlists:
+                widget = existing_widgets.pop(playlist_name)
+                widget.deleteLater()
+
         for playlist_name, track_ids in playlists.items():
             tracks = self.library.get_playlist_tracks(playlist_name)
-            playlist_item = PlaylistItem(playlist_name, tracks, self.library)
-            playlist_item.playlist_clicked.connect(self.on_playlist_clicked)
-            self.playlist_layout.addWidget(playlist_item)
+
+            if playlist_name in existing_widgets:
+                widget = existing_widgets[playlist_name]
+                widget.tracks = tracks
+                widget.update_collage()
+                for i in range(widget.layout().count()):
+                    item = widget.layout().itemAt(i)
+                    if isinstance(item, QVBoxLayout):
+                        for j in range(item.count()):
+                            child = item.itemAt(j)
+                            if child and child.widget() and isinstance(child.widget(), QLabel):
+                                label = child.widget()
+                                if "track" in label.text().lower():
+                                    track_count = len(tracks)
+                                    label.setText(f"{track_count} track{'s' if track_count != 1 else ''}")
+                                    break
+            else:
+                playlist_item = PlaylistItem(playlist_name, tracks, self.library)
+                playlist_item.playlist_clicked.connect(self.on_playlist_clicked)
+                self.playlist_layout.addWidget(playlist_item)
+                playlist_item.update_collage()
+
+        for i, (playlist_name, _) in enumerate(playlists.items()):
+            for j in range(self.playlist_layout.count()):
+                item = self.playlist_layout.itemAt(j)
+                if item and item.widget() and isinstance(item.widget(), PlaylistItem):
+                    if item.widget().playlist_name == playlist_name and i != j:
+                        widget = item.widget()
+                        self.playlist_layout.removeWidget(widget)
+                        self.playlist_layout.insertWidget(i, widget)
+                        break
+
         self.playlist_layout.addStretch()
 
     def on_playlist_clicked(self, playlist_name, tracks):
@@ -1477,11 +1052,9 @@ class MainWindow(QMainWindow):
         self.update_playlist_selection()
         self.playlist_changed.emit(playlist_name)
 
-        # Визначаємо, чи грає плеєр зараз
         was_playing = self._is_playing
 
         if self.current_playlist:
-            # Якщо плеєр вже грає, не анімуємо
             self.play_track(self.current_playlist[0], should_animate=not was_playing)
 
     def update_playlist_selection(self):
@@ -1561,55 +1134,45 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Помилка", "Не вдалося видалити плейлист")
 
-    def _progress_bar_clicked(self, event):
-        if event.button() == Qt.LeftButton and self._current_duration > 0:
-            click_x = event.position().x()
-            progress_width = self.progress_bar.width()
-            percentage = min(1.0, max(0.0, click_x / progress_width)) if progress_width > 0 else 0.0
-            seek_position = int(percentage * self._current_duration)
-            self.audio.set_position(seek_position)
-            target_value = int(percentage * 1000)
-            self.progress_bar.setValue(target_value)
-            self.update_progress(seek_position)
-
-    def _progress_bar_mouse_move(self, event):
-        if event.buttons() & Qt.LeftButton:
-            self._progress_bar_clicked(event)
-
     def on_playback_state_changed(self, state):
-        # Unused: replaced by wrapper on_playback_state_changed_wrapper
         pass
 
     def update_progress(self, position):
+        if self._progress_dragging:
+            return
+
         if self._current_duration > 0:
-            # position may be milliseconds
             percentage = (position / self._current_duration) * 1000 if self._current_duration > 0 else 0
-            self.progress_bar.setValue(int(percentage))
-            elapsed_seconds = int(position // 1000)
-            remaining_seconds = int((self._current_duration - position) // 1000) if self._current_duration > 0 else 0
-            self.time_elapsed_label.setText(self._format_time(elapsed_seconds))
-            self.time_remaining_label.setText(f"-{self._format_time(remaining_seconds)}")
-            self.progress_updated.emit(
-                int((position / self._current_duration) * 100) if self._current_duration > 0 else 0)
-            if position > 0 and not self._progress_style_updated:
-                self._progress_style_updated = True
-                try:
-                    self.progress_bar.update()
-                except Exception:
-                    pass
+            current_value = self.progress_bar.value()
+            if abs(current_value - percentage) > 1:
+                self.progress_bar.setValue(int(percentage))
+                elapsed_seconds = int(position // 1000)
+                remaining_seconds = int(
+                    (self._current_duration - position) // 1000) if self._current_duration > 0 else 0
+                self.time_elapsed_label.setText(self._format_time(elapsed_seconds))
+                self.time_remaining_label.setText(f"-{self._format_time(remaining_seconds)}")
+                self.progress_updated.emit(
+                    int((position / self._current_duration) * 100) if self._current_duration > 0 else 0)
+                if position > 0 and not self._progress_style_updated:
+                    self._progress_style_updated = True
+                    try:
+                        self.progress_bar.update()
+                    except Exception:
+                        pass
         else:
-            self.progress_bar.setValue(0)
-            self.time_elapsed_label.setText("0:00")
-            self.time_remaining_label.setText("0:00")
+            if self.progress_bar.value() != 0:
+                self.progress_bar.setValue(0)
+                self.time_elapsed_label.setText("0:00")
+                self.time_remaining_label.setText("0:00")
 
     def update_duration(self, duration):
-        # duration may be milliseconds
-        self._current_duration = duration
-        if duration > 0:
-            self.progress_bar.setValue(0)
-            self._progress_style_updated = False
-        else:
-            self.progress_bar.setValue(0)
+        if duration != self._current_duration:
+            self._current_duration = duration
+            if duration > 0:
+                self.progress_bar.setValue(0)
+                self._progress_style_updated = False
+            else:
+                self.progress_bar.setValue(0)
 
     def _format_time(self, seconds):
         hours = seconds // 3600
@@ -1627,19 +1190,15 @@ class MainWindow(QMainWindow):
         """Відтворює трек за ID з можливістю контролю анімації"""
         track = self.library.get_track_by_id(track_id)
         if track:
-            # Шукаємо трек в поточному плейлисті
             for i, t in enumerate(self.current_playlist):
                 if t['id'] == track_id:
                     self.current_track_index = i
                     break
             else:
-                # Якщо трек не знайдено в поточному плейлисті, додаємо його
                 self.current_track_index = len(self.current_playlist)
                 self.current_playlist.append(track)
 
-            # Якщо should_animate не вказано, визначаємо автоматично
             if should_animate is None:
-                # Анімуємо тільки якщо плеєр не грає
                 should_animate = not self._is_playing
 
             self.play_track(track, should_animate)
@@ -1648,18 +1207,15 @@ class MainWindow(QMainWindow):
         """Play a track with optional animation."""
         self._progress_style_updated = False
         file_path = track['file_path']
-        # set source for engine
         try:
             self.audio.set_source(file_path)
         except Exception as e:
             print("Error setting source:", e)
 
-        # Reset progress immediately
         self.progress_bar.setValue(0)
 
         current_state_was_playing = self._is_playing
 
-        # start playback
         try:
             self.audio.play()
         except Exception as e:
@@ -1667,11 +1223,9 @@ class MainWindow(QMainWindow):
 
         self.current_track_info.setText(f"{track['title']} - {track['artist']}")
 
-        # If should_animate not provided, decide: animate only if not already playing
         if should_animate is None:
             should_animate = not current_state_was_playing
 
-        # Key logic: if already playing, don't change icon; else animate or set static
         if current_state_was_playing:
             pass
         else:
@@ -1686,12 +1240,21 @@ class MainWindow(QMainWindow):
         self.library_updated.emit()
 
     def media_status_changed(self, status):
-        # kept for compatibility if needed
         pass
 
     def _on_end_of_media(self):
-        # forwarded to unified handler
-        self._on_end_of_media()
+        try:
+            if self._loop_enabled and self.current_playlist and self.current_track_index >= 0:
+                was_playing = self._is_playing
+                QTimer.singleShot(100, lambda: self.play_track(
+                    self.current_playlist[self.current_track_index],
+                    should_animate=not was_playing
+                ))
+            elif not self._loop_enabled:
+                was_playing = self._is_playing
+                QTimer.singleShot(100, lambda: self.on_next_auto(was_playing))
+        except Exception as e:
+            print("Error in _on_end_of_media:", e)
 
     def on_next_auto(self, was_playing):
         """Автоматичний перехід на наступний трек (викликається після закінчення треку)"""
@@ -1700,7 +1263,6 @@ class MainWindow(QMainWindow):
 
         if self.current_playlist:
             self.current_track_index = (self.current_track_index + 1) % len(self.current_playlist)
-            # Якщо трек вже грає, не анімуємо зміну іконки
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def toggle_loop(self, checked):
@@ -1725,13 +1287,11 @@ class MainWindow(QMainWindow):
 
     def on_play_pause(self):
         if self._animating:
-            # Determine desired state based on current playback state
             desired_state = 'pause' if self._is_playing else 'play'
             self._queued_state = desired_state
             return
 
         if self._is_playing:
-            # pause
             try:
                 self.audio.pause()
             except Exception:
@@ -1740,7 +1300,6 @@ class MainWindow(QMainWindow):
             self._is_playing = False
             self._stop_polling()
         else:
-            # if we have a current track selected
             if self.current_playlist and self.current_track_index >= 0:
                 self.play_track(self.current_playlist[self.current_track_index])
             elif self.current_playlist:
@@ -1775,27 +1334,26 @@ class MainWindow(QMainWindow):
     def update_progress_bar_theme(self, theme="default"):
         if isinstance(self.progress_bar, RoundedProgressBar):
             if theme == "dark":
-                self.progress_bar.set_colors(QColor(70, 70, 70, 180),
-                                             [QColor(29, 185, 84), QColor(45, 210, 110), QColor(29, 185, 84)])
+                self.progress_bar.set_colors(QColor(60, 60, 60, 200),
+                                             [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
             elif theme == "light":
                 self.progress_bar.set_colors(QColor(200, 200, 200, 200),
-                                             [QColor(29, 185, 84), QColor(45, 210, 110), QColor(29, 185, 84)])
+                                             [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
             else:
-                self.progress_bar.set_colors(QColor(70, 70, 70, 180),
-                                             [QColor(29, 185, 84), QColor(45, 210, 110), QColor(29, 185, 84)])
+                self.progress_bar.set_colors(QColor(60, 60, 60, 200),
+                                             [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
         else:
             if theme == "dark":
                 self.progress_bar.setStyleSheet("""
                     QProgressBar {
-                        background: rgba(70, 70, 70, 180);
+                        background: rgba(50, 50, 50, 200);
                         border-radius: 7px;
                         border: none;
                     }
                     QProgressBar::chunk {
                         background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
                             stop:0 rgba(29, 185, 84, 1), 
-                            stop:0.3 rgba(45, 210, 110, 1),
-                            stop:0.7 rgba(45, 210, 110, 1),
+                            stop:0.5 rgba(35, 200, 95, 1),
                             stop:1 rgba(29, 185, 84, 1));
                         border-radius: 7px;
                     }
@@ -1810,8 +1368,7 @@ class MainWindow(QMainWindow):
                     QProgressBar::chunk {
                         background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
                             stop:0 rgba(29, 185, 84, 1), 
-                            stop:0.3 rgba(45, 210, 110, 1),
-                            stop:0.7 rgba(45, 210, 110, 1),
+                            stop:0.5 rgba(35, 200, 95, 1),
                             stop:1 rgba(29, 185, 84, 1));
                         border-radius: 7px;
                     }
@@ -1819,15 +1376,14 @@ class MainWindow(QMainWindow):
             else:
                 self.progress_bar.setStyleSheet("""
                     QProgressBar {
-                        background: rgba(70, 70, 70, 180);
+                        background: rgba(60, 60, 60, 200);
                         border-radius: 7px;
                         border: none;
                     }
                     QProgressBar::chunk {
                         background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
                             stop:0 rgba(29, 185, 84, 1), 
-                            stop:0.3 rgba(45, 210, 110, 1),
-                            stop:0.7 rgba(45, 210, 110, 1),
+                            stop:0.5 rgba(35, 200, 95, 1),
                             stop:1 rgba(29, 185, 84, 1));
                         border-radius: 7px;
                     }
@@ -1873,10 +1429,12 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event):
-        # Stop all animations
         if self._anim_timer:
             self._anim_timer.stop()
             self._anim_timer = None
+
+        self._cover_cache.clear()
+        self._playlist_widgets.clear()
 
         try:
             self.settings.setValue("window_geometry", self.saveGeometry())
@@ -1889,7 +1447,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Stop media player / audio engine
         try:
             self.audio.stop()
         except Exception:
