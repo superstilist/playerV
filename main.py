@@ -3,6 +3,7 @@ import os
 import json
 import shutil
 import hashlib
+import platform
 from pathlib import Path
 from datetime import datetime
 from collections import OrderedDict
@@ -13,20 +14,20 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QMenu, QInputDialog,
     QScrollArea
 )
-from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal, QStandardPaths
 from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPixmap
 
-from engine_sound.AudioEngineQt import AudioEngineQt
-from engine_sound.AudioEngineVLC import AudioEngineVLC
-from gui_base.bar.RoundedProgressBar import RoundedProgressBar
-
+# audio engines (try VLC first)
 try:
-    import vlc
-
+    import vlc  # noqa: F401
     _HAVE_VLC = True
 except Exception:
     _HAVE_VLC = False
 
+# local imports (assumes these modules exist)
+from engine_sound.AudioEngineQt import AudioEngineQt
+from engine_sound.AudioEngineVLC import AudioEngineVLC
+from gui_base.bar.RoundedProgressBar import RoundedProgressBar
 
 from gui_base.home_page import HomePage
 from gui_base.playist_page import Playlist, PlaylistItem
@@ -35,22 +36,35 @@ from gui_base.settings_page import SettingsPage
 SETTINGS_ORG = "PlayerV"
 SETTINGS_APP = "Player"
 
+# -----------------------
+# Helper: cross-platform default music dir
+# -----------------------
+def get_default_music_dir():
+    # prefer standard user Music folder, fallback to ./music
+    try:
+        music_path = QStandardPaths.writableLocation(QStandardPaths.MusicLocation)
+        if music_path:
+            return Path(music_path)
+    except Exception:
+        pass
+    return Path.cwd() / "music"
 
 
-
-
+# -----------------------
+# Music scanner thread
+# -----------------------
 class MusicScanner(QThread):
     scan_progress = Signal(int, int)
     scan_complete = Signal(list)
 
     def __init__(self, music_dir):
         super().__init__()
-        self.music_dir = music_dir
+        self.music_dir = Path(music_dir)
 
     def run(self):
         extensions = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'}
         all_files = []
-        root = Path(self.music_dir)
+        root = self.music_dir
         if not root.exists():
             self.scan_complete.emit([])
             return
@@ -71,13 +85,18 @@ class MusicScanner(QThread):
                 except Exception as e:
                     print(f"Error reading {p}: {e}")
                 processed += 1
-                if processed % 10 == 0:
+                # update occasionally
+                if processed % 10 == 0 or processed == total:
                     self.scan_progress.emit(processed, total)
 
         self.scan_complete.emit(music_data)
 
     def extract_track_info(self, file_path):
-        from mutagen import File as MutagenFile
+        # lazy import mutagen only when needed
+        try:
+            from mutagen import File as MutagenFile
+        except Exception:
+            MutagenFile = None
 
         file_path = Path(file_path)
         track = {
@@ -97,38 +116,67 @@ class MusicScanner(QThread):
             'last_played': None
         }
 
+        if MutagenFile is None:
+            return track
+
         try:
             audio = MutagenFile(file_path)
             if audio is not None:
                 tags = getattr(audio, 'tags', None)
-                if tags:
-                    try:
-                        if 'TIT2' in tags: track['title'] = str(tags['TIT2'][0])
-                        if 'TPE1' in tags: track['artist'] = str(tags['TPE1'][0])
-                        if 'TALB' in tags: track['album'] = str(tags['TALB'][0])
-                        if 'TCON' in tags: track['genre'] = str(tags['TCON'][0])
-                        if 'TRCK' in tags: track['track_number'] = str(tags['TRCK'][0])
-                        if 'TDRC' in tags: track['year'] = str(tags['TDRC'][0])
-                    except Exception:
-                        pass
+                # Try common textual tags robustly
+                try:
+                    if tags:
+                        # Common ID3 keys (TIT2, TPE1, TALB) or generic keys
+                        def get_tag_value(tkeys):
+                            for k in tkeys:
+                                if k in tags:
+                                    v = tags[k]
+                                    try:
+                                        # many mutagen frames are lists or frames
+                                        return str(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else str(v)
+                                    except Exception:
+                                        return str(v)
+                            return None
 
-                    try:
-                        for key in tags.keys():
-                            if key.startswith('APIC') or key.lower().startswith('apic'):
-                                apic = tags[key]
-                                cover_data = getattr(apic, 'data', None)
-                                mime = getattr(apic, 'mime', None)
-                                if cover_data:
-                                    cover_ext = '.jpg' if mime and 'jpeg' in mime.lower() else '.png'
-                                    cover_filename = f"{track['id']}{cover_ext}"
-                                    cover_path = Path('covers') / cover_filename
-                                    cover_path.parent.mkdir(exist_ok=True)
-                                    with open(cover_path, 'wb') as f:
-                                        f.write(cover_data)
-                                    track['cover_path'] = str(cover_path)
-                                    break
-                    except Exception:
-                        pass
+                        title = get_tag_value(['TIT2', 'title', 'TITRE'])
+                        artist = get_tag_value(['TPE1', 'artist', 'ARTIST'])
+                        album = get_tag_value(['TALB', 'album'])
+                        genre = get_tag_value(['TCON', 'genre'])
+                        track_nr = get_tag_value(['TRCK', 'tracknumber'])
+                        year = get_tag_value(['TDRC', 'date', 'YEAR'])
+
+                        if title: track['title'] = title
+                        if artist: track['artist'] = artist
+                        if album: track['album'] = album
+                        if genre: track['genre'] = genre
+                        if track_nr:
+                            try:
+                                track['track_number'] = int(str(track_nr).split('/')[0])
+                            except Exception:
+                                track['track_number'] = track_nr
+                        if year: track['year'] = year
+                except Exception:
+                    pass
+
+                # Extract embedded cover (APIC) if present
+                try:
+                    for key in list(tags.keys()):
+                        if str(key).upper().startswith('APIC') or 'cover' in str(key).lower():
+                            apic = tags[key]
+                            cover_data = getattr(apic, 'data', None)
+                            mime = getattr(apic, 'mime', None)
+                            if cover_data:
+                                cover_ext = '.jpg' if mime and 'jpeg' in mime.lower() else '.png'
+                                cover_filename = f"{track['id']}{cover_ext}"
+                                covers_dir = Path('covers')
+                                covers_dir.mkdir(exist_ok=True)
+                                cover_path = covers_dir / cover_filename
+                                with open(cover_path, 'wb') as f:
+                                    f.write(cover_data)
+                                track['cover_path'] = str(cover_path)
+                                break
+                except Exception:
+                    pass
 
                 info = getattr(audio, 'info', None)
                 if info and hasattr(info, 'length'):
@@ -143,15 +191,18 @@ class MusicScanner(QThread):
         return track
 
 
+# -----------------------
+# Music library (JSON DB)
+# -----------------------
 class MusicLibrary:
     def __init__(self, db_path='music_library.json'):
-        self.db_path = db_path
+        self.db_path = Path(db_path)
         self.tracks = []
         self.playlists = {}
         self.load_library()
 
     def load_library(self):
-        if os.path.exists(self.db_path):
+        if self.db_path.exists():
             try:
                 with open(self.db_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -181,7 +232,7 @@ class MusicLibrary:
             print(f"Error saving library: {e}")
 
     def add_track(self, track_info):
-        existing_ids = [t['id'] for t in self.tracks]
+        existing_ids = {t['id'] for t in self.tracks}
         if track_info['id'] not in existing_ids:
             self.tracks.append(track_info)
             if 'Recently Added' in self.playlists:
@@ -289,6 +340,9 @@ class MusicLibrary:
         return None
 
 
+# -----------------------
+# Main application window
+# -----------------------
 class MainWindow(QMainWindow):
     playlist_changed = Signal(str)
     library_updated = Signal()
@@ -301,6 +355,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PlayerV")
         self.setMinimumSize(QSize(1100, 700))
 
+        # Restore geometry if available (safe)
         geom = self.settings.value("window_geometry", None)
         if geom:
             try:
@@ -308,9 +363,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        self.music_dir = 'music'
-        if not os.path.exists(self.music_dir):
-            os.makedirs(self.music_dir)
+        # cross-platform music dir
+        self.music_dir = get_default_music_dir()
+        self.music_dir.mkdir(parents=True, exist_ok=True)
 
         self.library = MusicLibrary()
         self.current_playlist = []
@@ -323,6 +378,7 @@ class MainWindow(QMainWindow):
         self._progress_dragging = False
         self._progress_last_update = 0
 
+        # choose audio engine
         if _HAVE_VLC:
             self.audio = AudioEngineVLC(self)
             self._using_vlc = True
@@ -330,6 +386,7 @@ class MainWindow(QMainWindow):
             self.audio = AudioEngineQt(self)
             self._using_vlc = False
 
+        # connect signals
         self.audio.position_changed.connect(self.update_progress)
         try:
             self.audio.duration_changed.connect(self.update_duration)
@@ -359,16 +416,21 @@ class MainWindow(QMainWindow):
 
         self._playlist_widgets = {}
 
+        # initialize UI
         self.init_ui()
         self.apply_theme()
         self.apply_settings()
 
         self.load_play_pause_animations()
 
+        # scan on startup
         self.scan_music_library()
 
         self.show_page("home")
 
+    # -----------------------
+    # Polling helpers
+    # -----------------------
     def _poll_audio_status(self):
         try:
             pos = self.audio.get_position()
@@ -405,10 +467,15 @@ class MainWindow(QMainWindow):
             self._stop_polling()
             if not self._animating:
                 self._set_play_icon_static()
-            self.progress_bar.setValue(0)
+            try:
+                self.progress_bar.setValue(0)
+            except Exception:
+                pass
 
+    # -----------------------
+    # Play/pause animation loading
+    # -----------------------
     def load_play_pause_animations(self):
-
         icon_size = QSize(32, 32)
 
         def load_dir_frames(folder, target_size):
@@ -430,9 +497,7 @@ class MainWindow(QMainWindow):
         self.frames_pause_to_play = load_dir_frames(os.path.join('assets', 'pause-to-play'), icon_size)
         self.frames_play_to_pause = load_dir_frames(os.path.join('assets', 'play-to-pause'), icon_size)
 
-
         self.btn_play.setIconSize(icon_size)
-
 
         if self._is_playing:
             self._set_pause_icon_static()
@@ -440,7 +505,6 @@ class MainWindow(QMainWindow):
             self._set_play_icon_static()
 
     def _set_play_icon_static(self):
-
         if self.frames_pause_to_play:
             self.btn_play.setIcon(QIcon(self.frames_pause_to_play[-1]))
         else:
@@ -514,7 +578,6 @@ class MainWindow(QMainWindow):
         self._anim_timer.start(self._anim_interval_ms)
 
     def _process_queued_state(self, state):
-
         if state == 'play':
             if self._is_playing:
                 return
@@ -556,10 +619,16 @@ class MainWindow(QMainWindow):
         else:
             self._set_pause_icon_static()
 
+    # -----------------------
+    # Progress bar mouse handling (supports Qt6 .position() and older .pos())
+    # -----------------------
     def _progress_bar_mouse_press(self, event):
         if event.button() == Qt.LeftButton:
             self._progress_dragging = True
-            self.progress_bar.set_dragging(True)
+            try:
+                self.progress_bar.set_dragging(True)
+            except Exception:
+                pass
             self._handle_seek_event(event)
             event.accept()
         else:
@@ -568,7 +637,10 @@ class MainWindow(QMainWindow):
     def _progress_bar_mouse_release(self, event):
         if event.button() == Qt.LeftButton:
             self._progress_dragging = False
-            self.progress_bar.set_dragging(False)
+            try:
+                self.progress_bar.set_dragging(False)
+            except Exception:
+                pass
             self._handle_seek_event(event)
             event.accept()
         else:
@@ -592,7 +664,12 @@ class MainWindow(QMainWindow):
 
         self._progress_last_update = current_time
 
-        x = event.position().x()
+        # compatibility for different Qt mouse event APIs
+        if hasattr(event, "position"):
+            x = event.position().x()
+        else:
+            x = event.pos().x()
+
         w = self.progress_bar.width()
 
         if w <= 0:
@@ -615,12 +692,16 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error seeking: {e}")
 
+    # -----------------------
+    # UI build
+    # -----------------------
     def init_ui(self):
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(14, 14, 14, 14)
         central_layout.setSpacing(12)
 
+        # Upper bar
         self.upper_bar = QFrame()
         self.upper_bar.setObjectName("upperBar")
         self.upper_bar.setFixedHeight(50)
@@ -637,24 +718,28 @@ class MainWindow(QMainWindow):
             app_icon_label.setPixmap(icon_pixmap)
         else:
             app_icon_label.setText("♫")
-            app_icon_label.setFont(QFont("Segoe UI", 20))
+            # choose font depending on platform
+            font_name = "Segoe UI" if platform.system() == "Windows" else "Sans Serif"
+            app_icon_label.setFont(QFont(font_name, 20))
         app_icon_label.setFixedSize(32, 32)
         title_layout.addWidget(app_icon_label)
 
         app_title = QLabel("PlayerV")
-        app_title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        font_name = "Segoe UI" if platform.system() == "Windows" else "Sans Serif"
+        app_title.setFont(QFont(font_name, 18, QFont.Weight.Bold))
         app_title.setStyleSheet("color: #1DB954;")
         title_layout.addWidget(app_title)
 
         upper_layout.addLayout(title_layout)
-
         upper_layout.addStretch()
 
         self.btn_settings_top = QPushButton()
-        self.btn_settings_top.setIcon(QIcon('assets/settings.png' if os.path.exists('assets/settings.png') else ''))
+        settings_icon = 'assets/settings.png' if os.path.exists('assets/settings.png') else ''
+        self.btn_settings_top.setIcon(QIcon(settings_icon))
         self.btn_settings_top.setToolTip("Налаштування")
         self.btn_settings_top.setFixedSize(40, 40)
         self.btn_settings_top.setCursor(Qt.PointingHandCursor)
+        self.btn_settings_top.clicked.connect(lambda: self.show_page("settings"))
         self.btn_settings_top.setStyleSheet("""
             QPushButton {
                 background: rgba(255,255,255,10);
@@ -669,11 +754,11 @@ class MainWindow(QMainWindow):
                 background: rgba(255,255,255,5);
             }
         """)
-        self.btn_settings_top.clicked.connect(lambda: self.show_page("settings"))
         upper_layout.addWidget(self.btn_settings_top)
 
         central_layout.addWidget(self.upper_bar)
 
+        # Main row: left playlist + pages
         row = QHBoxLayout()
         row.setSpacing(12)
 
@@ -686,16 +771,13 @@ class MainWindow(QMainWindow):
 
         left_title_layout = QHBoxLayout()
         left_title = QLabel("playlist")
-        left_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        left_title.setFont(QFont(font_name, 14, QFont.Weight.Bold))
         left_title_layout.addWidget(left_title)
 
         self.btn_add_music = QPushButton("add music")
         self.btn_add_music.setFixedHeight(30)
         self.btn_add_music.clicked.connect(self.add_music_files)
         left_title_layout.addWidget(self.btn_add_music)
-
-
-
         left_layout.addLayout(left_title_layout)
 
         self.playlist_scroll_area = QScrollArea()
@@ -714,11 +796,10 @@ class MainWindow(QMainWindow):
         self.playlist_layout.setSpacing(10)
 
         self.playlist_scroll_area.setWidget(self.playlist_container)
-
         left_layout.addWidget(self.playlist_scroll_area)
-
         row.addWidget(self.left_container)
 
+        # Pages (home, playlists, settings)
         self.pages_container = QFrame()
         self.pages_container.setObjectName("pagesPanel")
         pages_layout = QVBoxLayout(self.pages_container)
@@ -726,6 +807,7 @@ class MainWindow(QMainWindow):
         pages_layout.setSpacing(8)
 
         self.pages = QStackedWidget()
+        # Note: HomePage, Playlist, SettingsPage should be implemented separately
         self.page_home = HomePage(self.settings, self.library, self)
         self.page_playlist_page = Playlist(self.settings, self.library, self)
         self.page_settings = SettingsPage(self.settings, self.apply_settings)
@@ -738,20 +820,12 @@ class MainWindow(QMainWindow):
 
         central_layout.addLayout(row)
 
+        # Bottom controls: progress + playback buttons
         self.bottom_container = QFrame()
         self.bottom_container.setObjectName("bottomPanel")
         bottom_layout = QHBoxLayout(self.bottom_container)
         bottom_layout.setContentsMargins(12, 8, 12, 8)
         bottom_layout.setSpacing(10)
-
-        self.current_track_info = QLabel("choice track")
-        self.current_track_info.setStyleSheet("""
-            color: #ffffff;
-            font-size: 14px;
-            font-weight: bold;
-            padding: 5px;
-        """)
-        bottom_layout.addWidget(self.current_track_info, 1)
 
         progress_container = QWidget()
         progress_container.setFixedHeight(50)
@@ -771,14 +845,15 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.time_elapsed_label)
 
         self.progress_bar = RoundedProgressBar(height=14)
+        # default colors
         self.progress_bar.set_colors(QColor(60, 60, 60, 200),
                                      [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
 
+        # override mouse handlers
         self.progress_bar.mousePressEvent = self._progress_bar_mouse_press
         self.progress_bar.mouseReleaseEvent = self._progress_bar_mouse_release
         self.progress_bar.mouseMoveEvent = self._progress_bar_mouse_move
         self.progress_bar.setCursor(Qt.PointingHandCursor)
-
         self.progress_bar.setMouseTracking(False)
 
         progress_layout.addWidget(self.progress_bar, 1)
@@ -799,20 +874,21 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.setSpacing(12)
 
+        # playback buttons
         self.btn_prev = QPushButton()
-        self.btn_prev.setIcon(QIcon('assets/back.png'))
+        self.btn_prev.setIcon(QIcon('assets/back.png' if os.path.exists('assets/back.png') else ''))
         self.btn_prev.setToolTip("Попередній трек")
 
         self.btn_play = QPushButton()
-        self.btn_play.setIcon(QIcon('assets/play.png'))
+        self.btn_play.setIcon(QIcon('assets/play.png' if os.path.exists('assets/play.png') else ''))
         self.btn_play.setToolTip("Відтворити/Пауза")
 
         self.btn_next = QPushButton()
-        self.btn_next.setIcon(QIcon('assets/next.png'))
+        self.btn_next.setIcon(QIcon('assets/next.png' if os.path.exists('assets/next.png') else ''))
         self.btn_next.setToolTip("Наступний трек")
 
         self.btn_loop = QPushButton()
-        self.btn_loop.setIcon(QIcon('assets/loop.png'))
+        self.btn_loop.setIcon(QIcon('assets/loop.png' if os.path.exists('assets/loop.png') else ''))
         self.btn_loop.setToolTip("Увімкнути/вимкнути цикл")
         self.btn_loop.setCheckable(True)
         self._loop_enabled = False
@@ -857,12 +933,16 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self.build_stylesheet())
         self.update_playlist_panel()
 
+        # connect signals for pages
         self.playlist_changed.connect(self.page_home.on_playlist_changed)
         self.library_updated.connect(self.page_home.refresh_library)
         self.library_updated.connect(self.update_playlist_panel)
 
         self.progress_updated.connect(self._on_progress_updated)
 
+    # -----------------------
+    # Stylesheet
+    # -----------------------
     def build_stylesheet(self) -> str:
         return """
         QWidget {
@@ -946,6 +1026,9 @@ class MainWindow(QMainWindow):
         }
         """
 
+    # -----------------------
+    # Library scanning
+    # -----------------------
     def scan_music_library(self):
         self.scanner = MusicScanner(self.music_dir)
         self.scanner.scan_complete.connect(self.on_scan_complete)
@@ -957,40 +1040,51 @@ class MainWindow(QMainWindow):
         self.update_playlist_panel()
         self.library_updated.emit()
 
+    # -----------------------
+    # Add files (copy to music dir)
+    # -----------------------
     def add_music_files(self):
+        start_dir = str(self.music_dir) if self.music_dir.exists() else str(Path.home())
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Виберіть музичні файли",
-            "",
+            start_dir,
             "Музичні файли (*.mp3 *.wav *.flac *.ogg *.m4a *.aac)"
         )
 
         if files:
+            added = 0
             for file_path in files:
                 try:
-                    dest_path = os.path.join(self.music_dir, os.path.basename(file_path))
-                    if os.path.exists(dest_path):
-                        name, ext = os.path.splitext(os.path.basename(file_path))
+                    src = Path(file_path)
+                    dest_path = self.music_dir / src.name
+                    if dest_path.exists():
+                        name, ext = os.path.splitext(src.name)
                         counter = 1
-                        while os.path.exists(dest_path):
-                            dest_path = os.path.join(self.music_dir, f"{name}_{counter}{ext}")
+                        while dest_path.exists():
+                            dest_path = self.music_dir / f"{name}_{counter}{ext}"
                             counter += 1
 
-                    shutil.copy2(file_path, dest_path)
+                    shutil.copy2(str(src), str(dest_path))
 
                     scanner = MusicScanner(self.music_dir)
                     track_info = scanner.extract_track_info(dest_path)
                     if self.library.add_track(track_info):
-                        print(f"Додано: {track_info['title']}")
+                        added += 1
+                        print(f"Added: {track_info['title']}")
 
                 except Exception as e:
                     QMessageBox.warning(self, "Помилка", f"Не вдалося додати файл: {e}")
 
-            self.update_playlist_panel()
-            self.library_updated.emit()
+            if added > 0:
+                self.update_playlist_panel()
+                self.library_updated.emit()
             QMessageBox.information(self, "Файли додано",
                                     f"Додано {len(files)} файлів у бібліотеку")
 
+    # -----------------------
+    # Playlist panel update
+    # -----------------------
     def update_playlist_panel(self):
         playlists = self.library.playlists
 
@@ -1001,11 +1095,13 @@ class MainWindow(QMainWindow):
                 widget = item.widget()
                 existing_widgets[widget.playlist_name] = widget
 
+        # remove widgets for deleted playlists
         for playlist_name in list(existing_widgets.keys()):
             if playlist_name not in playlists:
                 widget = existing_widgets.pop(playlist_name)
                 widget.deleteLater()
 
+        # add/update playlists
         for playlist_name, track_ids in playlists.items():
             tracks = self.library.get_playlist_tracks(playlist_name)
 
@@ -1013,6 +1109,7 @@ class MainWindow(QMainWindow):
                 widget = existing_widgets[playlist_name]
                 widget.tracks = tracks
                 widget.update_collage()
+                # update count label if present
                 for i in range(widget.layout().count()):
                     item = widget.layout().itemAt(i)
                     if isinstance(item, QVBoxLayout):
@@ -1020,6 +1117,7 @@ class MainWindow(QMainWindow):
                             child = item.itemAt(j)
                             if child and child.widget() and isinstance(child.widget(), QLabel):
                                 label = child.widget()
+                                # best-effort, do not crash if label text differs
                                 if "track" in label.text().lower():
                                     track_count = len(tracks)
                                     label.setText(f"{track_count} track{'s' if track_count != 1 else ''}")
@@ -1030,6 +1128,7 @@ class MainWindow(QMainWindow):
                 self.playlist_layout.addWidget(playlist_item)
                 playlist_item.update_collage()
 
+        # maintain order
         for i, (playlist_name, _) in enumerate(playlists.items()):
             for j in range(self.playlist_layout.count()):
                 item = self.playlist_layout.itemAt(j)
@@ -1042,6 +1141,9 @@ class MainWindow(QMainWindow):
 
         self.playlist_layout.addStretch()
 
+    # -----------------------
+    # Playlist interactions
+    # -----------------------
     def on_playlist_clicked(self, playlist_name, tracks):
         self.current_playlist_name = playlist_name
         self.current_playlist = tracks
@@ -1131,9 +1233,9 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Помилка", "Не вдалося видалити плейлист")
 
-    def on_playback_state_changed(self, state):
-        pass
-
+    # -----------------------
+    # Playback / progress
+    # -----------------------
     def update_progress(self, position):
         if self._progress_dragging:
             return
@@ -1142,7 +1244,10 @@ class MainWindow(QMainWindow):
             percentage = (position / self._current_duration) * 1000 if self._current_duration > 0 else 0
             current_value = self.progress_bar.value()
             if abs(current_value - percentage) > 1:
-                self.progress_bar.setValue(int(percentage))
+                try:
+                    self.progress_bar.setValue(int(percentage))
+                except Exception:
+                    pass
                 elapsed_seconds = int(position // 1000)
                 remaining_seconds = int(
                     (self._current_duration - position) // 1000) if self._current_duration > 0 else 0
@@ -1157,19 +1262,28 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
         else:
-            if self.progress_bar.value() != 0:
-                self.progress_bar.setValue(0)
-                self.time_elapsed_label.setText("0:00")
-                self.time_remaining_label.setText("0:00")
+            try:
+                if self.progress_bar.value() != 0:
+                    self.progress_bar.setValue(0)
+                    self.time_elapsed_label.setText("0:00")
+                    self.time_remaining_label.setText("0:00")
+            except Exception:
+                pass
 
     def update_duration(self, duration):
         if duration != self._current_duration:
             self._current_duration = duration
             if duration > 0:
-                self.progress_bar.setValue(0)
-                self._progress_style_updated = False
+                try:
+                    self.progress_bar.setValue(0)
+                    self._progress_style_updated = False
+                except Exception:
+                    pass
             else:
-                self.progress_bar.setValue(0)
+                try:
+                    self.progress_bar.setValue(0)
+                except Exception:
+                    pass
 
     def _format_time(self, seconds):
         hours = seconds // 3600
@@ -1184,7 +1298,7 @@ class MainWindow(QMainWindow):
         pass
 
     def play_track_by_id(self, track_id, should_animate=None):
-        """Відтворює трек за ID з можливістю контролю анімації"""
+        """Play by id with optional animation control"""
         track = self.library.get_track_by_id(track_id)
         if track:
             for i, t in enumerate(self.current_playlist):
@@ -1209,7 +1323,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print("Error setting source:", e)
 
-        self.progress_bar.setValue(0)
+        try:
+            self.progress_bar.setValue(0)
+        except Exception:
+            pass
 
         current_state_was_playing = self._is_playing
 
@@ -1218,7 +1335,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print("Error audio.play():", e)
 
-        self.current_track_info.setText(f"{track['title']} - {track['artist']}")
 
         if should_animate is None:
             should_animate = not current_state_was_playing
@@ -1254,7 +1370,7 @@ class MainWindow(QMainWindow):
             print("Error in _on_end_of_media:", e)
 
     def on_next_auto(self, was_playing):
-        """Автоматичний перехід на наступний трек (викликається після закінчення треку)"""
+        """Automatically advance to the next track"""
         if self._animating:
             return
 
@@ -1265,16 +1381,17 @@ class MainWindow(QMainWindow):
     def toggle_loop(self, checked):
         self._loop_enabled = checked
 
-
-
     def _on_refresh_complete(self, music_data):
         self.library.tracks.clear()
         for track in music_data:
             self.library.add_track(track)
         self.update_playlist_panel()
         self.library_updated.emit()
-        self.btn_refresh.setEnabled(True)
-        self.btn_refresh.setText("🔄 Оновити")
+        try:
+            self.btn_refresh.setEnabled(True)
+            self.btn_refresh.setText("🔄 Оновити")
+        except Exception:
+            pass
         QMessageBox.information(self, "Оновлено", "Музичну бібліотеку та плейлисти оновлено!")
 
     def on_play_pause(self):
@@ -1319,7 +1436,7 @@ class MainWindow(QMainWindow):
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def on_track_double_clicked(self, track_id):
-        """Викликається при подвійному кліку на трек у списку"""
+        """Double-click handler from a track list"""
         was_playing = self._is_playing
         self.play_track_by_id(track_id, should_animate=not was_playing)
 
@@ -1335,6 +1452,7 @@ class MainWindow(QMainWindow):
                 self.progress_bar.set_colors(QColor(60, 60, 60, 200),
                                              [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
         else:
+            # fallback CSS styling
             if theme == "dark":
                 self.progress_bar.setStyleSheet("""
                     QProgressBar {
@@ -1381,6 +1499,9 @@ class MainWindow(QMainWindow):
                     }
                 """)
 
+    # -----------------------
+    # Theme / apply settings
+    # -----------------------
     def apply_theme(self):
         theme = self.settings.value("theme", "dark", type=str)
         pal = QPalette()
@@ -1447,15 +1568,19 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+# -----------------------
+# Main entry
+# -----------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     if os.path.exists("app_icon.png"):
         app.setWindowIcon(QIcon("app_icon.png"))
 
-    os.makedirs('music', exist_ok=True)
-    os.makedirs('covers', exist_ok=True)
-    os.makedirs('assets', exist_ok=True)
+    # ensure folders exist
+    Path('covers').mkdir(exist_ok=True)
+    Path('assets').mkdir(exist_ok=True)
+    # music dir created by get_default_music_dir in MainWindow
 
     win = MainWindow()
     win.show()
