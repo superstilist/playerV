@@ -403,7 +403,7 @@ class StyleManager:
             }
 
             QWidget {
-                background-color: transparent;
+                background-color: #121212;
                 color: #e8e8e8;
                 font-family: "Segoe UI", "Arial", sans-serif;
                 font-size: 12px;
@@ -441,7 +441,7 @@ class StyleManager:
 
             /* Scroll Areas */
             QScrollArea {
-                background: transparent;
+                background-color: #121212;
                 border: none;
                 outline: none;
             }
@@ -528,7 +528,7 @@ class StyleManager:
 
             /* Frames */
             QFrame {
-                background: transparent;
+                background-color: #121212;
             }
 
             /* Line Edits */
@@ -690,7 +690,7 @@ class StyleManager:
             }
 
             QWidget {
-                background-color: transparent;
+                background-color: #f0f0f0;
                 color: #333333;
                 font-family: "Segoe UI", "Arial", sans-serif;
                 font-size: 12px;
@@ -728,7 +728,7 @@ class StyleManager:
 
             /* Scroll Areas */
             QScrollArea {
-                background: transparent;
+                background-color: #f0f0f0;
                 border: none;
                 outline: none;
             }
@@ -815,7 +815,7 @@ class StyleManager:
 
             /* Frames */
             QFrame {
-                background: transparent;
+                background-color: #f0f0f0;
             }
 
             /* Line Edits */

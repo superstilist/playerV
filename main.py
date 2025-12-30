@@ -354,6 +354,11 @@ class MainWindow(QMainWindow):
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.setWindowTitle("PlayerV")
         self.setMinimumSize(QSize(1100, 700))
+        
+        # Fix for Linux rendering - ensure proper window attributes
+        self.setAttribute(Qt.WA_NoSystemBackground, False)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
         # Restore geometry if available (safe)
         geom = self.settings.value("window_geometry", None)
@@ -435,11 +440,12 @@ class MainWindow(QMainWindow):
         try:
             pos = self.audio.get_position()
             dur = self.audio.get_duration()
-            self.update_progress(pos)
-            if dur and dur != self._current_duration:
-                self.update_duration(dur)
-        except Exception:
-            pass
+            if pos is not None and dur is not None:
+                self.update_progress(pos)
+                if dur and dur != self._current_duration:
+                    self.update_duration(dur)
+        except Exception as e:
+            print(f"Error in audio polling: {e}")
 
     def _start_polling(self):
         if not self._poll_active:
@@ -765,6 +771,8 @@ class MainWindow(QMainWindow):
         self.left_container = QFrame()
         self.left_container.setObjectName("leftPanel")
         self.left_container.setFixedWidth(320)
+        self.left_container.setAttribute(Qt.WA_TranslucentBackground)
+        self.left_container.setStyleSheet("background: transparent;")
         left_layout = QVBoxLayout(self.left_container)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
@@ -946,7 +954,7 @@ class MainWindow(QMainWindow):
     def build_stylesheet(self) -> str:
         return """
         QWidget {
-            background: transparent;
+            background-color: #121212;
             color: #e8e8e8;
             font-family: "Segoe UI", "Arial", sans-serif;
             font-size: 12px;
@@ -971,7 +979,7 @@ class MainWindow(QMainWindow):
             border-radius: 16px;
         }
         QWidget#playlistContainer {
-            background: transparent;
+            background-color: #121212;
         }
 
         QProgressBar {
@@ -992,7 +1000,7 @@ class MainWindow(QMainWindow):
         }
 
         QScrollArea {
-            background: transparent;
+            background-color: #121212;
             border: none;
             outline: none;
         }

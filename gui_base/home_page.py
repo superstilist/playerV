@@ -22,7 +22,6 @@ class HomePage(QWidget):
         self.library = library
         self.main_window = main_window
         self.current_playlist = "Recently Added"
-        self._temp_cover_files = []
         self.context_menu_track = None
 
         # Simplified layout - only scroll area
@@ -47,9 +46,9 @@ class HomePage(QWidget):
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setStyleSheet("""
-            QScrollArea { 
-                background-color: transparent; 
-                border: none; 
+            QScrollArea {
+                background-color: #121212;
+                border: none;
             }
         """)
 
@@ -284,12 +283,6 @@ class HomePage(QWidget):
 
     def play_song(self, song, cover_pixmap):
         """Play song"""
-        if cover_pixmap:
-            self.update_cover(cover_pixmap)
-
-        track_name = song.get('title', 'Unknown')
-        self.track_name_label.setText(track_name)
-
         self.track_selected.emit(song)
 
         if hasattr(self.main_window, 'play_track_by_id'):
