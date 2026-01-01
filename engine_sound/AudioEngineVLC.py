@@ -24,6 +24,7 @@ class AudioEngineVLC(QObject):
 
         self._em = self.player.event_manager()
         self._em.event_attach(vlc.EventType.MediaPlayerTimeChanged, self._on_time_changed)
+        self._em.event_attach(vlc.EventType.MediaPlayerLengthChanged, self._on_length_changed)
         self._em.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_end_reached)
         self._em.event_attach(vlc.EventType.MediaPlayerPaused, self._on_state_changed)
         self._em.event_attach(vlc.EventType.MediaPlayerPlaying, self._on_state_changed)
@@ -34,6 +35,15 @@ class AudioEngineVLC(QObject):
             t = self.player.get_time()
             if t is None: t = 0
             self.position_changed.emit(max(0, int(t)))
+        except Exception:
+            pass
+
+    def _on_length_changed(self, event):
+        try:
+            d = self.player.get_length()
+            if d and d != -1:
+                self._duration = int(d)
+                self.duration_changed.emit(self._duration)
         except Exception:
             pass
 
@@ -58,6 +68,11 @@ class AudioEngineVLC(QObject):
                 pass
             self.player.set_media(media)
             self._media = media
+            
+            # Emit duration changed signal if duration is available
+            duration = media.get_duration()
+            if duration and duration != -1:
+                self.duration_changed.emit(int(duration))
         except Exception as e:
             print("VLC set_source error:", e)
 

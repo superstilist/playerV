@@ -164,7 +164,13 @@ class HomePage(QWidget):
         # Назва пісні
         name_label = QLabel(song.get('title', 'Unknown')[:20] + ('...' if len(song.get('title', '')) > 20 else ''))
         name_label.setFont(QFont("Arial", 24, QFont.Bold))
-        name_label.setStyleSheet("color: white; background-color: rgba(40, 40, 40, 150); border-radius: 10px; padding: 5px;")
+        name_label.setStyleSheet("""
+            color: white;
+            background-color: rgba(30, 30, 30, 180);
+            border-radius: 12px;
+            padding: 8px 12px;
+            margin: 4px 0;
+        """)
         name_label.setWordWrap(True)
         name_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(name_label)
@@ -172,7 +178,13 @@ class HomePage(QWidget):
         # Виконавець
         artist_label = QLabel(song.get('artist', 'Unknown')[:20] + ('...' if len(song.get('artist', '')) > 20 else ''))
         artist_label.setFont(QFont("Arial", 16))
-        artist_label.setStyleSheet("color: #b3b3b3; background-color: rgba(40, 40, 40, 150); border-radius: 10px; padding: 5px;")
+        artist_label.setStyleSheet("""
+            color: #b3b3b3;
+            background-color: rgba(30, 30, 30, 180);
+            border-radius: 12px;
+            padding: 6px 10px;
+            margin: 4px 0;
+        """)
         artist_label.setWordWrap(True)
         artist_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(artist_label)

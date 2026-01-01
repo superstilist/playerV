@@ -14,11 +14,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal, QUrl, QRectF
 from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPixmap, QPainter, QBrush, QLinearGradient, QPainterPath
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from gui_base.home_page import HomePage
 from gui_base.playist_page import Playlist
 from gui_base.settings_page import SettingsPage
+from engine_sound import AudioEngine, _HAVE_VLC
 
 SETTINGS_ORG = "PlayerV"
 SETTINGS_APP = "Player"
@@ -533,13 +533,16 @@ class MainWindow(QMainWindow):
         self._is_playing = False
         self._current_duration = 0
 
-        self.media_player = QMediaPlayer()
-        self.audio_output = QAudioOutput()
-        self.media_player.setAudioOutput(self.audio_output)
-        self.media_player.positionChanged.connect(self.update_progress)
-        self.media_player.durationChanged.connect(self.update_duration)
-        self.media_player.mediaStatusChanged.connect(self.media_status_changed)
-        self.media_player.playbackStateChanged.connect(self.on_playback_state_changed)
+        # Initialize the audio engine (VLC first, Qt fallback)
+        self.audio_engine = AudioEngine(self)
+        self.audio_engine.position_changed.connect(self.update_progress)
+        self.audio_engine.duration_changed.connect(self.update_duration)
+        self.audio_engine.state_changed.connect(self.on_playback_state_changed)
+        self.audio_engine.end_of_media.connect(self.media_status_changed)
+        
+        # Store the active engine name for reference
+        self.active_engine_name = self.audio_engine.get_active_engine_name()
+        print(f"Using {self.active_engine_name} audio engine")
 
         self._progress_style_updated = False
 
@@ -591,8 +594,7 @@ class MainWindow(QMainWindow):
         self.btn_play.setIconSize(QSize(28, 28))
 
         # Set initial static icon depending on current playback state
-        state = self.media_player.playbackState()
-        if state == QMediaPlayer.PlayingState:
+        if self._is_playing:
             self._set_pause_icon_static()
         else:
             self._set_play_icon_static()
@@ -697,13 +699,13 @@ class MainWindow(QMainWindow):
         """Process queued state after current animation finishes."""
         if state == 'play':
             # Тільки якщо дійсно потрібно змінити на play
-            if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+            if self._is_playing:
                 # Вже граємо, нічого не робимо
                 return
             self.animate_to_play()
         elif state == 'pause':
             # Тільки якщо дійсно потрібно змінити на pause
-            if self.media_player.playbackState() == QMediaPlayer.PausedState:
+            if not self._is_playing:
                 # Вже на паузі, нічого не робимо
                 return
             self.animate_to_pause()
@@ -857,7 +859,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.set_colors(QColor(60, 60, 60, 200),
                                      [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
 
-        # Override mouse events to seek media_player directly
+        # Override mouse events to seek audio engine directly
         def _mouse_press(event):
             if event.button() == Qt.LeftButton and self._current_duration > 0:
                 # Qt6: event.position() is QPointF
@@ -866,7 +868,7 @@ class MainWindow(QMainWindow):
                 pct = min(1.0, max(0.0, x / w)) if w > 0 else 0.0
                 seek_pos = int(pct * self._current_duration)
                 try:
-                    self.media_player.setPosition(seek_pos)
+                    self.audio_engine.set_position(seek_pos)
                 except Exception:
                     pass
                 # Set internal progress for instant visual feedback
@@ -1107,7 +1109,7 @@ class MainWindow(QMainWindow):
         self.playlist_changed.emit(playlist_name)
 
         # Визначаємо, чи грає плеєр зараз
-        was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
+        was_playing = self._is_playing
 
         if self.current_playlist:
             # Якщо плеєр вже грає, не анімуємо
@@ -1210,7 +1212,7 @@ class MainWindow(QMainWindow):
         if self._animating:
             return
 
-        if state == QMediaPlayer.PlayingState:
+        if state == 'playing':
             self._is_playing = True
             # Тільки якщо не анімуємо - встановити статичну іконку
             if not self._animating:
@@ -1218,11 +1220,11 @@ class MainWindow(QMainWindow):
             if self.current_playlist and self.current_track_index >= 0:
                 track = self.current_playlist[self.current_track_index]
                 self.current_track_info.setText(f"{track['title']} - {track['artist']}")
-        elif state == QMediaPlayer.PausedState:
+        elif state == 'paused':
             self._is_playing = False
             if not self._animating:
                 self._set_play_icon_static()
-        elif state == QMediaPlayer.StoppedState:
+        elif state == 'stopped':
             self._is_playing = False
             if not self._animating:
                 self._set_play_icon_static()
@@ -1295,8 +1297,8 @@ class MainWindow(QMainWindow):
             # Якщо should_animate не вказано, визначаємо автоматично
             if should_animate is None:
                 # Анімуємо тільки якщо плеєр не грає
-                should_animate = not (self.media_player.playbackState() == QMediaPlayer.PlayingState)
-
+                should_animate = not self._is_playing
+    
             self.play_track(track, should_animate)
 
     def play_track(self, track, should_animate=None):
@@ -1309,24 +1311,23 @@ class MainWindow(QMainWindow):
                            Якщо False - ніколи не анімує
         """
         self._progress_style_updated = False
-        file_url = QUrl.fromLocalFile(track['file_path'])
-        self.media_player.setSource(file_url)
+        self.audio_engine.set_source(track['file_path'])
         self.progress_bar.setValue(0)
 
         # Отримуємо поточний стан перед відтворенням
-        current_state = self.media_player.playbackState()
-        self.media_player.play()
+        current_state = self.audio_engine.get_current_engine().player.get_state() if hasattr(self.audio_engine.get_current_engine(), 'player') else None
+        self.audio_engine.play()
 
         self.current_track_info.setText(f"{track['title']} - {track['artist']}")
 
         # Якщо should_animate не вказано, визначаємо автоматично
         if should_animate is None:
             # Анімуємо тільки якщо плеєр не грає
-            should_animate = not (current_state == QMediaPlayer.PlayingState)
+            should_animate = not self._is_playing
 
         # Ключова логіка: якщо трек вже грає - не міняємо іконку
         # Якщо трек не грає - анімуємо тільки якщо should_animate == True
-        if current_state == QMediaPlayer.PlayingState:
+        if self._is_playing:
             # Якщо вже граємо, НЕ міняємо іконку взагалі
             pass  # Не робимо нічого, іконка залишається пауза
         else:
@@ -1340,20 +1341,19 @@ class MainWindow(QMainWindow):
         self.library.increment_play_count(track['id'])
         self.library_updated.emit()
 
-    def media_status_changed(self, status):
+    def media_status_changed(self):
         try:
-            # Use MediaStatus enum consistently
-            if status == QMediaPlayer.MediaStatus.EndOfMedia:
-                if self._loop_enabled and self.current_playlist and self.current_track_index >= 0:
-                    # Small delay before replaying
-                    was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
-                    QTimer.singleShot(100, lambda: self.play_track(
-                        self.current_playlist[self.current_track_index],
-                        should_animate=not was_playing
-                    ))
-                elif not self._loop_enabled:
-                    was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
-                    QTimer.singleShot(100, lambda: self.on_next_auto(was_playing))
+            # End of media handling
+            if self._loop_enabled and self.current_playlist and self.current_track_index >= 0:
+                # Small delay before replaying
+                was_playing = self._is_playing
+                QTimer.singleShot(100, lambda: self.play_track(
+                    self.current_playlist[self.current_track_index],
+                    should_animate=not was_playing
+                ))
+            elif not self._loop_enabled:
+                was_playing = self._is_playing
+                QTimer.singleShot(100, lambda: self.on_next_auto(was_playing))
         except Exception as e:
             print(f"Error in media_status_changed: {e}")
 
@@ -1390,22 +1390,15 @@ class MainWindow(QMainWindow):
     def on_play_pause(self):
         if self._animating:
             # Determine desired state based on current playback state
-            state = self.media_player.playbackState()
-            desired_state = 'pause' if state == QMediaPlayer.PlayingState else 'play'
+            desired_state = 'pause' if self._is_playing else 'play'
             self._queued_state = desired_state
             return
 
-        state = self.media_player.playbackState()
-        if state == QMediaPlayer.PlayingState:
-            self.media_player.pause()
+        if self._is_playing:
+            self.audio_engine.pause()
             # animate pause -> play
             self.animate_to_play()
             self._is_playing = False
-        elif state == QMediaPlayer.PausedState:
-            self.media_player.play()
-            # animate play -> pause
-            self.animate_to_pause()
-            self._is_playing = True
         else:
             if self.current_playlist and self.current_track_index >= 0:
                 self.play_track(self.current_playlist[self.current_track_index])
@@ -1421,7 +1414,7 @@ class MainWindow(QMainWindow):
 
         if self.current_playlist:
             # Визначаємо, чи грає плеєр зараз
-            was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
+            was_playing = self._is_playing
             self.current_track_index = (self.current_track_index - 1) % len(self.current_playlist)
             # Якщо трек вже грає, не анімуємо зміну іконки
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
@@ -1432,7 +1425,7 @@ class MainWindow(QMainWindow):
 
         if self.current_playlist:
             # Визначаємо, чи грає плеєр зараз
-            was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
+            was_playing = self._is_playing
             self.current_track_index = (self.current_track_index + 1) % len(self.current_playlist)
             # Якщо трек вже грає, не анімуємо зміну іконки
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
@@ -1440,7 +1433,7 @@ class MainWindow(QMainWindow):
     def on_track_double_clicked(self, track_id):
         """Викликається при подвійному кліку на трек у списку"""
         # Визначаємо, чи грає плеєр зараз
-        was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
+        was_playing = self._is_playing
         self.play_track_by_id(track_id, should_animate=not was_playing)
 
     def update_progress_bar_theme(self, theme="default"):
@@ -1557,9 +1550,9 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Stop media player
-        if self.media_player.playbackState() == QMediaPlayer.PlayingState:
-            self.media_player.stop()
+        # Stop audio engine
+        if self._is_playing:
+            self.audio_engine.stop()
 
         super().closeEvent(event)
 

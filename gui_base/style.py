@@ -547,11 +547,13 @@ class StyleManager:
             /* Labels */
             QLabel {
                 color: #e0e0e0;
+                border-radius: 8px;
             }
 
             /* Frames */
             QFrame {
                 background-color: #121212;
+                border-radius: 8px;
             }
 
             /* Line Edits */
@@ -845,11 +847,13 @@ class StyleManager:
             /* Labels */
             QLabel {
                 color: #333333;
+                border-radius: 8px;
             }
 
             /* Frames */
             QFrame {
                 background-color: #f0f0f0;
+                border-radius: 8px;
             }
 
             /* Line Edits */
