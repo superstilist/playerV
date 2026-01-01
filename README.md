@@ -84,8 +84,7 @@ The application uses a modern and vibrant color scheme:
 - `assets/`: UI assets like buttons and icons
 - `music/`: Music library directory
 - `covers/`: Album covers directory
-- `bar/`: Progress bar component
-  - `RoundedProgressBar.py`: Custom rounded progress bar component
+
 
 
 ## Getting Started

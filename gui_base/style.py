@@ -1,5 +1,3 @@
-
-
 from PySide6.QtCore import Qt, QSize, QSettings
 from PySide6.QtGui import QFont, QColor, QPalette
 from PySide6.QtWidgets import (
@@ -14,7 +12,7 @@ SETTINGS_APP = "Player"
 
 class SettingsDialog(QDialog):
     """Floating settings dialog window"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
@@ -23,7 +21,7 @@ class SettingsDialog(QDialog):
         self.setModal(True)
         self.init_ui()
         self.apply_theme()
-    
+
     def init_ui(self):
         layout = DialogLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -39,7 +37,7 @@ class SettingsDialog(QDialog):
         self.theme_combo.addItems(["Dark", "Light"])
         self.theme_combo.setCurrentText(self.settings.value("theme", "Dark", type=str).capitalize())
         self.theme_combo.currentTextChanged.connect(self.update_theme)
-        
+
         theme_layout = QHBoxLayout()
         theme_layout.addWidget(theme_label)
         theme_layout.addWidget(self.theme_combo)
@@ -51,7 +49,7 @@ class SettingsDialog(QDialog):
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.settings.value("volume", 80, type=int))
         self.volume_slider.valueChanged.connect(self.update_volume)
-        
+
         volume_layout = QHBoxLayout()
         volume_layout.addWidget(volume_label)
         volume_layout.addWidget(self.volume_slider)
@@ -63,7 +61,7 @@ class SettingsDialog(QDialog):
         self.lang_combo.addItems(["English", "Ukrainian"])
         self.lang_combo.setCurrentText(self.settings.value("language", "English", type=str))
         self.lang_combo.currentTextChanged.connect(self.update_language)
-        
+
         lang_layout = QHBoxLayout()
         lang_layout.addWidget(lang_label)
         lang_layout.addWidget(self.lang_combo)
@@ -74,43 +72,55 @@ class SettingsDialog(QDialog):
         self.auto_scan_check.setChecked(self.settings.value("auto_scan", True, type=bool))
         self.auto_scan_check.stateChanged.connect(self.update_auto_scan)
         layout.addWidget(self.auto_scan_check)
-        
+
         layout.addStretch()
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
         close_btn.setFixedHeight(35)
         layout.addWidget(close_btn)
-    
+
     def update_theme(self, text):
         self.settings.setValue("theme", text.lower())
         if self.parent() and hasattr(self.parent(), 'apply_settings'):
             self.parent().apply_settings()
         self.apply_theme()
-    
+
     def update_volume(self, value):
         self.settings.setValue("volume", value)
         if self.parent() and hasattr(self.parent(), 'apply_settings'):
             self.parent().apply_settings()
-    
+
     def update_language(self, text):
         self.settings.setValue("language", text)
         if self.parent() and hasattr(self.parent(), 'apply_settings'):
             self.parent().apply_settings()
-    
+
     def update_auto_scan(self, state):
         self.settings.setValue("auto_scan", state == Qt.Checked)
         if self.parent() and hasattr(self.parent(), 'apply_settings'):
             self.parent().apply_settings()
-    
+
     def apply_theme(self):
         theme = self.settings.value("theme", "dark", type=str)
-        
+
         if theme == "dark":
             self.setStyleSheet("""
                 QDialog {
                     background-color: #2a2a2a;
                     color: #ffffff;
+                    border-radius: 8px;
+                }
+                QGroupBox {
+                    border-radius: 6px;
+                    margin-top: 12px;
+                    padding-top: 10px;
+                    font-weight: bold;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 5px;
                 }
                 QLabel {
                     color: #ffffff;
@@ -118,15 +128,13 @@ class SettingsDialog(QDialog):
                 QComboBox {
                     background-color: #3a3a3a;
                     color: #ffffff;
-                    border: 1px solid #555555;
                     padding: 5px;
-                    border-radius: 3px;
+                    border-radius: 4px;
                 }
                 QComboBox:hover {
                     background-color: #4a4a4a;
                 }
                 QSlider::groove:horizontal {
-                    border: 1px solid #555555;
                     height: 8px;
                     background: #3a3a3a;
                     margin: 2px 0;
@@ -134,7 +142,6 @@ class SettingsDialog(QDialog):
                 }
                 QSlider::handle:horizontal {
                     background: #1DB954;
-                    border: 1px solid #179944;
                     width: 18px;
                     margin: -2px 0;
                     border-radius: 9px;
@@ -145,7 +152,6 @@ class SettingsDialog(QDialog):
                 QCheckBox::indicator {
                     width: 18px;
                     height: 18px;
-                    border: 2px solid #555555;
                     border-radius: 4px;
                     background: transparent;
                 }
@@ -157,7 +163,7 @@ class SettingsDialog(QDialog):
                     background-color: #1DB954;
                     color: white;
                     border: none;
-                    border-radius: 5px;
+                    border-radius: 6px;
                     font-weight: bold;
                     padding: 8px 16px;
                 }
@@ -170,6 +176,18 @@ class SettingsDialog(QDialog):
                 QDialog {
                     background-color: #f5f5f5;
                     color: #333333;
+                    border-radius: 8px;
+                }
+                QGroupBox {
+                    border-radius: 6px;
+                    margin-top: 12px;
+                    padding-top: 10px;
+                    font-weight: bold;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 5px;
                 }
                 QLabel {
                     color: #333333;
@@ -177,15 +195,13 @@ class SettingsDialog(QDialog):
                 QComboBox {
                     background-color: #ffffff;
                     color: #333333;
-                    border: 1px solid #cccccc;
                     padding: 5px;
-                    border-radius: 3px;
+                    border-radius: 4px;
                 }
                 QComboBox:hover {
                     background-color: #f0f0f0;
                 }
                 QSlider::groove:horizontal {
-                    border: 1px solid #cccccc;
                     height: 8px;
                     background: #f5f5f5;
                     margin: 2px 0;
@@ -193,7 +209,6 @@ class SettingsDialog(QDialog):
                 }
                 QSlider::handle:horizontal {
                     background: #1DB954;
-                    border: 1px solid #179944;
                     width: 18px;
                     margin: -2px 0;
                     border-radius: 9px;
@@ -204,7 +219,6 @@ class SettingsDialog(QDialog):
                 QCheckBox::indicator {
                     width: 18px;
                     height: 18px;
-                    border: 2px solid #999999;
                     border-radius: 4px;
                     background: transparent;
                 }
@@ -216,7 +230,7 @@ class SettingsDialog(QDialog):
                     background-color: #1DB954;
                     color: white;
                     border: none;
-                    border-radius: 5px;
+                    border-radius: 6px;
                     font-weight: bold;
                     padding: 8px 16px;
                 }
@@ -312,11 +326,11 @@ class UpperToolBar(QFrame):
         if theme == "dark":
             self.setStyleSheet("""
                 QFrame#upperPanel {
-                    background: rgba(24, 24, 26, 220); /* трохи темніше */
-                    border-radius: 12px;
-                    border: 1px solid rgba(255, 255, 255, 0.06);
+                    background: rgba(24, 24, 26, 220);
+                    border-radius: 8px;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
                     margin: 6px;
-                    
+
                 }
                 QLabel {
                     color: #ffffff;
@@ -325,7 +339,7 @@ class UpperToolBar(QFrame):
                     background-color: #1DB954;
                     color: white;
                     border: none;
-                    border-radius: 12px;
+                    border-radius: 8px;
                     font-weight: bold;
                     padding: 6px 12px;
                     min-height: 30px;
@@ -341,15 +355,15 @@ class UpperToolBar(QFrame):
                     padding: 0;
                     min-width: 32px;
                     min-height: 32px;
-                    border-radius: 10px;
+                    border-radius: 8px;
                 }
             """)
         else:
             self.setStyleSheet("""
                 QFrame#upperPanel {
                     background: rgba(250, 250, 250, 230);
-                    border-radius: 12px;
-                    border: 1px solid rgba(0, 0, 0, 0.06);
+                    border-radius: 8px;
+                    border: 1px solid rgba(0, 0, 0, 0.08);
                     margin: 6px;
                     padding: 6px;
                 }
@@ -360,7 +374,7 @@ class UpperToolBar(QFrame):
                     background-color: #1DB954;
                     color: white;
                     border: none;
-                    border-radius: 12px;
+                    border-radius: 8px;
                     font-weight: bold;
                     padding: 6px 12px;
                     min-height: 30px;
@@ -376,10 +390,9 @@ class UpperToolBar(QFrame):
                     padding: 0;
                     min-width: 32px;
                     min-height: 32px;
-                    border-radius: 10px;
+                    border-radius: 8px;
                 }
             """)
-
 
 
 class StyleManager:
@@ -414,35 +427,49 @@ class StyleManager:
             /* Left Panel */
             QFrame#leftPanel {
                 background: rgba(30, 30, 32, 180);
-                border-radius: 16px;
-                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 10px;
+                border: 2px solid rgba(255, 255, 255, 0.1);
             }
 
             /* Pages Panel */
             QFrame#pagesPanel {
                 background: rgba(24, 24, 26, 180);
-                border-radius: 16px;
-                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 10px;
+                border: 2px solid rgba(255, 255, 255, 0.1);
             }
 
             /* Bottom Panel */
             QFrame#bottomPanel {
                 background: rgba(24, 24, 26, 250);
-                border-radius: 16px;
-                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 10px;
+                border: 2px solid rgba(255, 255, 255, 0.1);
             }
 
             /* Settings Frame */
             QFrame#settingsFrame {
                 background-color: #252525;
-                border-radius: 10px;
-                border: 1px solid #333;
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }
+
+            /* Group Box */
+            QGroupBox {
+                border-radius: 6px;
+                margin-top: 12px;
+                padding-top: 10px;
+                font-weight: bold;
+                color: #ffffff;
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
             }
 
             /* Scroll Areas */
             QScrollArea {
                 background-color: #121212;
-                border: none;
                 outline: none;
             }
 
@@ -477,8 +504,7 @@ class StyleManager:
             /* Buttons */
             QPushButton {
                 background: rgba(40, 40, 40, 0.8);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 8px;
+                border-radius: 6px;
                 padding: 8px 16px;
                 color: #e0e0e0;
             }
@@ -492,12 +518,10 @@ class StyleManager:
             /* Player Control Buttons */
             QPushButton#playerButton {
                 background: rgba(255, 255, 255, 10);
-                border: 1px solid rgba(255, 255, 255, 15);
-                border-radius: 22px;
+                border-radius: 8px;
             }
             QPushButton#playerButton:hover {
                 background: rgba(255, 255, 255, 20);
-                border-color: rgba(255, 255, 255, 25);
             }
             QPushButton#playerButton:pressed {
                 background: rgba(255, 255, 255, 5);
@@ -510,15 +534,14 @@ class StyleManager:
             /* Progress Bar */
             QProgressBar {
                 background: rgba(60, 60, 60, 200);
-                border-radius: 7px;
-                border: none;
+                border-radius: 4px;
             }
             QProgressBar::chunk {
                 background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
                     stop:0 rgba(29, 185, 84, 1), 
                     stop:0.5 rgba(35, 200, 95, 1),
                     stop:1 rgba(29, 185, 84, 1));
-                border-radius: 7px;
+                border-radius: 4px;
             }
 
             /* Labels */
@@ -534,21 +557,19 @@ class StyleManager:
             /* Line Edits */
             QLineEdit {
                 background: rgba(60, 60, 60, 0.7);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 6px;
+                border-radius: 4px;
                 padding: 8px;
                 color: #e0e0e0;
                 selection-background-color: #1DB954;
             }
             QLineEdit:focus {
-                border: 1px solid #1DB954;
+                border: none;
             }
 
             /* Combo Boxes */
             QComboBox {
                 background: rgba(60, 60, 60, 0.7);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 6px;
+                border-radius: 4px;
                 padding: 8px;
                 color: #e0e0e0;
             }
@@ -564,9 +585,10 @@ class StyleManager:
             }
             QComboBox QAbstractItemView {
                 background: rgba(60, 60, 60, 0.95);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.08);
                 selection-background-color: #1DB954;
                 color: #e0e0e0;
+                border-radius: 4px;
             }
 
             /* Checkboxes */
@@ -577,21 +599,19 @@ class StyleManager:
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
-                border: 2px solid #666666;
                 border-radius: 4px;
                 background: transparent;
             }
             QCheckBox::indicator:checked {
                 background-color: #1DB954;
-                border-color: #1DB954;
             }
             QCheckBox::indicator:hover {
-                border-color: #888888;
+                border-color: transparent;
             }
 
             /* Sliders */
             QSlider::groove:horizontal {
-                border: 1px solid #444;
+                border: 1px solid rgba(255, 255, 255, 0.08);
                 height: 8px;
                 background: #353535;
                 margin: 2px 0;
@@ -599,7 +619,7 @@ class StyleManager:
             }
             QSlider::handle:horizontal {
                 background: #1DB954;
-                border: 1px solid #179944;
+                border: 1px solid rgba(255, 255, 255, 0.08);
                 width: 18px;
                 margin: -2px 0;
                 border-radius: 9px;
@@ -612,8 +632,8 @@ class StyleManager:
             QMenu {
                 background-color: #252525;
                 color: #e0e0e0;
-                border: 1px solid #333;
-                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
                 padding: 4px;
             }
             QMenu::item {
@@ -629,6 +649,8 @@ class StyleManager:
             QMessageBox {
                 background-color: #252525;
                 color: #e0e0e0;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
             }
             QMessageBox QLabel {
                 color: #e0e0e0;
@@ -648,7 +670,7 @@ class StyleManager:
             QToolTip {
                 background-color: #1a1a1a;
                 color: #e0e0e0;
-                border: 1px solid #333;
+                border: 1px solid rgba(255, 255, 255, 0.08);
                 padding: 5px;
                 border-radius: 4px;
             }
@@ -657,6 +679,8 @@ class StyleManager:
             QInputDialog {
                 background-color: #252525;
                 color: #e0e0e0;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
             }
             QInputDialog QLabel {
                 color: #e0e0e0;
@@ -664,7 +688,7 @@ class StyleManager:
             QInputDialog QLineEdit {
                 background-color: #353535;
                 color: #e0e0e0;
-                border: 1px solid #444;
+                border: 1px solid rgba(255, 255, 255, 0.08);
                 padding: 5px;
                 border-radius: 4px;
             }
@@ -701,35 +725,49 @@ class StyleManager:
             /* Left Panel */
             QFrame#leftPanel {
                 background: rgba(255, 255, 255, 180);
-                border-radius: 16px;
-                border: 1px solid rgba(0, 0, 0, 0.1);
+                border-radius: 10px;
+                border: 2px solid rgba(0, 0, 0, 0.1);
             }
 
             /* Pages Panel */
             QFrame#pagesPanel {
                 background: rgba(255, 255, 255, 180);
-                border-radius: 16px;
-                border: 1px solid rgba(0, 0, 0, 0.1);
+                border-radius: 10px;
+                border: 2px solid rgba(0, 0, 0, 0.1);
             }
 
             /* Bottom Panel */
             QFrame#bottomPanel {
                 background: rgba(255, 255, 255, 250);
-                border-radius: 16px;
-                border: 1px solid rgba(0, 0, 0, 0.1);
+                border-radius: 10px;
+                border: 2px solid rgba(0, 0, 0, 0.1);
             }
 
             /* Settings Frame */
             QFrame#settingsFrame {
                 background-color: #ffffff;
-                border-radius: 10px;
-                border: 1px solid #ddd;
+                border-radius: 8px;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+            }
+
+            /* Group Box */
+            QGroupBox {
+                border-radius: 6px;
+                margin-top: 12px;
+                padding-top: 10px;
+                font-weight: bold;
+                color: #333333;
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
             }
 
             /* Scroll Areas */
             QScrollArea {
                 background-color: #f0f0f0;
-                border: none;
                 outline: none;
             }
 
@@ -764,8 +802,7 @@ class StyleManager:
             /* Buttons */
             QPushButton {
                 background: rgba(255, 255, 255, 0.8);
-                border: 1px solid rgba(0, 0, 0, 0.1);
-                border-radius: 8px;
+                border-radius: 6px;
                 padding: 8px 16px;
                 color: #333333;
             }
@@ -779,12 +816,10 @@ class StyleManager:
             /* Player Control Buttons */
             QPushButton#playerButton {
                 background: rgba(0, 0, 0, 0.05);
-                border: 1px solid rgba(0, 0, 0, 0.1);
-                border-radius: 22px;
+                border-radius: 8px;
             }
             QPushButton#playerButton:hover {
                 background: rgba(0, 0, 0, 0.1);
-                border-color: rgba(0, 0, 0, 0.15);
             }
             QPushButton#playerButton:pressed {
                 background: rgba(0, 0, 0, 0.02);
@@ -797,15 +832,14 @@ class StyleManager:
             /* Progress Bar */
             QProgressBar {
                 background: rgba(220, 220, 220, 0.8);
-                border-radius: 7px;
-                border: none;
+                border-radius: 4px;
             }
             QProgressBar::chunk {
                 background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
                     stop:0 rgba(29, 185, 84, 1), 
                     stop:0.5 rgba(35, 200, 95, 1),
                     stop:1 rgba(29, 185, 84, 1));
-                border-radius: 7px;
+                border-radius: 4px;
             }
 
             /* Labels */
@@ -821,21 +855,19 @@ class StyleManager:
             /* Line Edits */
             QLineEdit {
                 background: rgba(255, 255, 255, 0.9);
-                border: 1px solid rgba(0, 0, 0, 0.1);
-                border-radius: 6px;
+                border-radius: 4px;
                 padding: 8px;
                 color: #333333;
                 selection-background-color: #1DB954;
             }
             QLineEdit:focus {
-                border: 1px solid #1DB954;
+                border: none;
             }
 
             /* Combo Boxes */
             QComboBox {
                 background: rgba(255, 255, 255, 0.9);
-                border: 1px solid rgba(0, 0, 0, 0.1);
-                border-radius: 6px;
+                border-radius: 4px;
                 padding: 8px;
                 color: #333333;
             }
@@ -851,9 +883,10 @@ class StyleManager:
             }
             QComboBox QAbstractItemView {
                 background: rgba(255, 255, 255, 0.95);
-                border: 1px solid rgba(0, 0, 0, 0.1);
+                border: 1px solid rgba(0, 0, 0, 0.08);
                 selection-background-color: #1DB954;
                 color: #333333;
+                border-radius: 4px;
             }
 
             /* Checkboxes */
@@ -864,21 +897,18 @@ class StyleManager:
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
-                border: 2px solid #999999;
                 border-radius: 4px;
                 background: transparent;
             }
             QCheckBox::indicator:checked {
                 background-color: #1DB954;
-                border-color: #1DB954;
             }
             QCheckBox::indicator:hover {
-                border-color: #666666;
+                border-color: transparent;
             }
 
             /* Sliders */
             QSlider::groove:horizontal {
-                border: 1px solid #ddd;
                 height: 8px;
                 background: #f5f5f5;
                 margin: 2px 0;
@@ -886,7 +916,6 @@ class StyleManager:
             }
             QSlider::handle:horizontal {
                 background: #1DB954;
-                border: 1px solid #179944;
                 width: 18px;
                 margin: -2px 0;
                 border-radius: 9px;
@@ -899,8 +928,8 @@ class StyleManager:
             QMenu {
                 background-color: #ffffff;
                 color: #333333;
-                border: 1px solid #ddd;
-                border-radius: 8px;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 6px;
                 padding: 4px;
             }
             QMenu::item {
@@ -916,6 +945,8 @@ class StyleManager:
             QMessageBox {
                 background-color: #ffffff;
                 color: #333333;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 8px;
             }
             QMessageBox QLabel {
                 color: #333333;
@@ -935,7 +966,7 @@ class StyleManager:
             QToolTip {
                 background-color: #ffffff;
                 color: #333333;
-                border: 1px solid #ddd;
+                border: 1px solid rgba(0, 0, 0, 0.08);
                 padding: 5px;
                 border-radius: 4px;
             }
@@ -944,6 +975,8 @@ class StyleManager:
             QInputDialog {
                 background-color: #ffffff;
                 color: #333333;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 8px;
             }
             QInputDialog QLabel {
                 color: #333333;
@@ -951,7 +984,7 @@ class StyleManager:
             QInputDialog QLineEdit {
                 background-color: #f5f5f5;
                 color: #333333;
-                border: 1px solid #ddd;
+                border: 1px solid rgba(0, 0, 0, 0.08);
                 padding: 5px;
                 border-radius: 4px;
             }

@@ -3,100 +3,290 @@ import os
 import json
 import shutil
 import hashlib
-import platform
 from pathlib import Path
 from datetime import datetime
-from collections import OrderedDict
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QProgressBar, QPushButton, QLabel, QFrame,
-    QFileDialog, QMessageBox, QMenu, QInputDialog,
-    QScrollArea
+    QFileDialog, QMessageBox, QMenu, QInputDialog, QListWidget, QListWidgetItem,
+    QScrollArea, QSizePolicy
 )
-from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal, QStandardPaths
-from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPixmap
-
-# audio engines (try VLC first)
-try:
-    import vlc  # noqa: F401
-    _HAVE_VLC = True
-except Exception:
-    _HAVE_VLC = False
-
-# local imports (assumes these modules exist)
-from engine_sound.AudioEngineQt import AudioEngineQt
-from engine_sound.AudioEngineVLC import AudioEngineVLC
-from gui_base.bar.RoundedProgressBar import RoundedProgressBar
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread, Signal, QUrl, QRectF
+from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPixmap, QPainter, QBrush, QLinearGradient, QPainterPath
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from gui_base.home_page import HomePage
-from gui_base.playist_page import Playlist, PlaylistItem
+from gui_base.playist_page import Playlist
 from gui_base.settings_page import SettingsPage
 
 SETTINGS_ORG = "PlayerV"
 SETTINGS_APP = "Player"
 
-# -----------------------
-# Helper: cross-platform default music dir
-# -----------------------
-def get_default_music_dir():
-    # prefer standard user Music folder, fallback to ./music
-    try:
-        music_path = QStandardPaths.writableLocation(QStandardPaths.MusicLocation)
-        if music_path:
-            return Path(music_path)
-    except Exception:
-        pass
-    return Path.cwd() / "music"
 
 
-# -----------------------
-# Music scanner thread
-# -----------------------
+
+class RoundedProgressBar(QProgressBar):
+
+    def __init__(self, parent=None, height: int = 14):
+        super().__init__(parent)
+        self.setTextVisible(False)
+        self.setRange(0, 1000)
+        self.setValue(0)
+        self.setFixedHeight(height)
+
+
+        self._bg_color = QColor(60, 60, 60, 200)
+        self._grad_colors = [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)]
+
+
+        self._last_painted_value = None
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
+    def set_colors(self, bg_color: QColor, grad_colors: list):
+        self._bg_color = bg_color
+        self._grad_colors = grad_colors
+        self.update()
+
+    def paintEvent(self, event):
+
+        current_value = self.value()
+        if self._last_painted_value == current_value and (event.rect().width() == 0 or event.rect().height() == 0):
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = rect.height() / 2.0
+
+        # Draw background rounded rect
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(self._bg_color))
+        painter.drawRoundedRect(rect, radius, radius)
+
+        # Draw foreground (chunk) with gradient
+        minimum = self.minimum()
+        maximum = self.maximum()
+        if maximum > minimum and current_value > minimum:
+            ratio = (current_value - minimum) / (maximum - minimum)
+            fg_width = max(1.0, rect.width() * ratio)
+            fg_rect = QRectF(rect.x(), rect.y(), fg_width, rect.height())
+
+            grad = QLinearGradient(fg_rect.topLeft(), fg_rect.topRight())
+            if len(self._grad_colors) >= 3:
+                grad.setColorAt(0.0, self._grad_colors[0])
+                grad.setColorAt(0.5, self._grad_colors[1])
+                grad.setColorAt(1.0, self._grad_colors[2])
+            elif len(self._grad_colors) == 2:
+                grad.setColorAt(0.0, self._grad_colors[0])
+                grad.setColorAt(1.0, self._grad_colors[1])
+            else:
+                grad.setColorAt(0.0, self._grad_colors[0])
+                grad.setColorAt(1.0, self._grad_colors[0])
+
+            painter.setBrush(QBrush(grad))
+            # Rounded rect ensures circular ends even for fg_width < height
+            painter.drawRoundedRect(fg_rect, radius, radius)
+
+        # subtle border for crispness
+        painter.setPen(QColor(255, 255, 255, 10))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, radius, radius)
+
+        painter.end()
+        self._last_painted_value = current_value
+
+
+class PlaylistItem(QFrame):
+    """Custom widget for displaying a playlist with collage of up to 4 track covers"""
+
+    playlist_clicked = Signal(str, list)  # Emits playlist name and tracks when clicked
+
+    def __init__(self, playlist_name, tracks, library):
+        super().__init__()
+        self.playlist_name = playlist_name
+        self.tracks = tracks
+        self.library = library
+        self._selected = False
+        self.setFixedHeight(200)  # Large playlist items
+        self.setCursor(Qt.PointingHandCursor)
+        self.setObjectName("playlistItem")
+        self.init_ui()
+        self.update_style()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # Playlist collage (2x2 grid of track covers)
+        self.collage_label = QLabel()
+        self.collage_label.setFixedSize(150, 150)
+        self.collage_label.setAlignment(Qt.AlignCenter)
+        self.collage_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(60, 60, 60, 0.5);
+                border-radius: 10px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+        """)
+
+        # Create the collage
+        collage_pixmap = self.create_playlist_collage()
+        self.collage_label.setPixmap(collage_pixmap)
+
+        layout.addWidget(self.collage_label, alignment=Qt.AlignCenter)
+
+        # Playlist title and track count
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(2)
+
+        # Playlist title
+        title_label = QLabel(self.playlist_name)
+        title_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("color: #ffffff;")
+        title_label.setWordWrap(True)
+        title_layout.addWidget(title_label)
+
+        # Track count
+        track_count = len(self.tracks)
+        count_label = QLabel(f"{track_count} track{'s' if track_count != 1 else ''}")
+        count_label.setFont(QFont("Segoe UI", 9))
+        count_label.setAlignment(Qt.AlignCenter)
+        count_label.setStyleSheet("color: #b3b3b3;")
+        title_layout.addWidget(count_label)
+
+        layout.addLayout(title_layout)
+
+        # Connect click event
+        self.mousePressEvent = self.on_click
+
+    def create_playlist_collage(self):
+        collage_size = QSize(150, 150)
+        cell_size = QSize(72, 72)
+        spacing = 3
+
+        collage = QPixmap(collage_size)
+        collage.fill(Qt.transparent)
+
+        painter = QPainter(collage)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Build list of pixmaps or None
+        track_covers = []
+        for track in self.tracks[:4]:
+            cover_path = track.get('cover_path')
+            if cover_path and os.path.exists(cover_path):
+                pixmap = QPixmap(cover_path)
+                if not pixmap.isNull():
+                    track_covers.append(pixmap)
+                    continue
+            track_covers.append(None)
+
+        # Ensure length 4
+        while len(track_covers) < 4:
+            track_covers.append(None)
+
+        positions = [
+            (0, 0), (1, 0),
+            (0, 1), (1, 1)
+        ]
+
+        for i, (row, col) in enumerate(positions):
+            x = col * (cell_size.width() + spacing)
+            y = row * (cell_size.height() + spacing)
+
+            if track_covers[i] is not None:
+                # Scale and draw with rounded clipping using QPainterPath
+                scaled = track_covers[i].scaled(cell_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                # center
+                draw_x = x + (cell_size.width() - scaled.width()) // 2
+                draw_y = y + (cell_size.height() - scaled.height()) // 2
+
+                path = QPainterPath()
+                path.addRoundedRect(draw_x, draw_y, cell_size.width(), cell_size.height(), 8, 8)
+                painter.setClipPath(path)
+                painter.drawPixmap(draw_x, draw_y, scaled)
+                painter.setClipping(False)
+            else:
+                painter.setBrush(QBrush(QColor(80, 80, 80, 180)))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(x, y, cell_size.width(), cell_size.height(), 8, 8)
+
+                painter.setBrush(QBrush(QColor(200, 200, 200, 150)))
+                note_size = 24
+                note_x = x + (cell_size.width() - note_size) // 2
+                note_y = y + (cell_size.height() - note_size) // 2
+                painter.drawEllipse(note_x, note_y, note_size, note_size)
+
+        painter.end()
+        return collage
+
+    def setSelected(self, selected):
+        self._selected = selected
+        self.update_style()
+
+    def update_style(self):
+        if self._selected:
+            self.setStyleSheet("""
+                QFrame#playlistItem {
+                    background-color: rgba(29, 185, 84, 0.3);
+                    border: 2px solid rgba(29, 185, 84, 0.6);
+                    border-radius: 14px;
+                    margin: 2px;
+                }
+                QFrame#playlistItem:hover {
+                    background-color: rgba(29, 185, 84, 0.4);
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame#playlistItem {
+                    background-color: rgba(40, 40, 40, 0.8);
+                    border-radius: 14px;
+                    margin: 2px;
+                }
+                QFrame#playlistItem:hover {
+                    background-color: rgba(60, 60, 60, 0.9);
+                }
+            """)
+
+    def on_click(self, event):
+        if event.button() == Qt.LeftButton:
+            self.playlist_clicked.emit(self.playlist_name, self.tracks)
+        super().mousePressEvent(event)
+
+
 class MusicScanner(QThread):
     scan_progress = Signal(int, int)
     scan_complete = Signal(list)
 
     def __init__(self, music_dir):
         super().__init__()
-        self.music_dir = Path(music_dir)
+        self.music_dir = music_dir
 
     def run(self):
-        extensions = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'}
+        extensions = ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac']
         all_files = []
-        root = self.music_dir
-        if not root.exists():
-            self.scan_complete.emit([])
-            return
+        for ext in extensions:
+            all_files.extend(list(Path(self.music_dir).rglob(f'*{ext}')))
 
-        total = 0
-        for p in root.rglob('*'):
-            if p.is_file() and p.suffix.lower() in extensions:
-                total += 1
-
-        self.scan_progress.emit(0, total)
+        self.scan_progress.emit(0, len(all_files))
 
         music_data = []
-        processed = 0
-        for p in root.rglob('*'):
-            if p.is_file() and p.suffix.lower() in extensions:
-                try:
-                    music_data.append(self.extract_track_info(p))
-                except Exception as e:
-                    print(f"Error reading {p}: {e}")
-                processed += 1
-                # update occasionally
-                if processed % 10 == 0 or processed == total:
-                    self.scan_progress.emit(processed, total)
+        for i, file_path in enumerate(all_files):
+            try:
+                music_data.append(self.extract_track_info(file_path))
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+            self.scan_progress.emit(i + 1, len(all_files))
 
         self.scan_complete.emit(music_data)
 
     def extract_track_info(self, file_path):
-        # lazy import mutagen only when needed
-        try:
-            from mutagen import File as MutagenFile
-        except Exception:
-            MutagenFile = None
+        from mutagen import File as MutagenFile
 
         file_path = Path(file_path)
         track = {
@@ -116,72 +306,47 @@ class MusicScanner(QThread):
             'last_played': None
         }
 
-        if MutagenFile is None:
-            return track
-
         try:
             audio = MutagenFile(file_path)
             if audio is not None:
+                # Generic tag handling
                 tags = getattr(audio, 'tags', None)
-                # Try common textual tags robustly
-                try:
-                    if tags:
-                        # Common ID3 keys (TIT2, TPE1, TALB) or generic keys
-                        def get_tag_value(tkeys):
-                            for k in tkeys:
-                                if k in tags:
-                                    v = tags[k]
-                                    try:
-                                        # many mutagen frames are lists or frames
-                                        return str(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else str(v)
-                                    except Exception:
-                                        return str(v)
-                            return None
+                if tags:
+                    # ID3 style
+                    try:
+                        if 'TIT2' in tags: track['title'] = str(tags['TIT2'][0])
+                        if 'TPE1' in tags: track['artist'] = str(tags['TPE1'][0])
+                        if 'TALB' in tags: track['album'] = str(tags['TALB'][0])
+                        if 'TCON' in tags: track['genre'] = str(tags['TCON'][0])
+                        if 'TRCK' in tags: track['track_number'] = str(tags['TRCK'][0])
+                        if 'TDRC' in tags: track['year'] = str(tags['TDRC'][0])
+                    except Exception:
+                        pass
 
-                        title = get_tag_value(['TIT2', 'title', 'TITRE'])
-                        artist = get_tag_value(['TPE1', 'artist', 'ARTIST'])
-                        album = get_tag_value(['TALB', 'album'])
-                        genre = get_tag_value(['TCON', 'genre'])
-                        track_nr = get_tag_value(['TRCK', 'tracknumber'])
-                        year = get_tag_value(['TDRC', 'date', 'YEAR'])
+                    # Extract attached pictures (APIC)
+                    try:
+                        for key in tags.keys():
+                            if key.startswith('APIC') or key.lower().startswith('apic'):
+                                apic = tags[key]
+                                cover_data = getattr(apic, 'data', None)
+                                mime = getattr(apic, 'mime', None)
+                                if cover_data:
+                                    cover_ext = '.jpg' if mime and 'jpeg' in mime.lower() else '.png'
+                                    cover_filename = f"{track['id']}{cover_ext}"
+                                    cover_path = Path('covers') / cover_filename
+                                    cover_path.parent.mkdir(exist_ok=True)
+                                    with open(cover_path, 'wb') as f:
+                                        f.write(cover_data)
+                                    track['cover_path'] = str(cover_path)
+                                    break
+                    except Exception:
+                        pass
 
-                        if title: track['title'] = title
-                        if artist: track['artist'] = artist
-                        if album: track['album'] = album
-                        if genre: track['genre'] = genre
-                        if track_nr:
-                            try:
-                                track['track_number'] = int(str(track_nr).split('/')[0])
-                            except Exception:
-                                track['track_number'] = track_nr
-                        if year: track['year'] = year
-                except Exception:
-                    pass
-
-                # Extract embedded cover (APIC) if present
-                try:
-                    for key in list(tags.keys()):
-                        if str(key).upper().startswith('APIC') or 'cover' in str(key).lower():
-                            apic = tags[key]
-                            cover_data = getattr(apic, 'data', None)
-                            mime = getattr(apic, 'mime', None)
-                            if cover_data:
-                                cover_ext = '.jpg' if mime and 'jpeg' in mime.lower() else '.png'
-                                cover_filename = f"{track['id']}{cover_ext}"
-                                covers_dir = Path('covers')
-                                covers_dir.mkdir(exist_ok=True)
-                                cover_path = covers_dir / cover_filename
-                                with open(cover_path, 'wb') as f:
-                                    f.write(cover_data)
-                                track['cover_path'] = str(cover_path)
-                                break
-                except Exception:
-                    pass
-
+                # Fallbacks for other tag formats
                 info = getattr(audio, 'info', None)
                 if info and hasattr(info, 'length'):
                     try:
-                        track['duration'] = int(info.length * 1000)
+                        track['duration'] = int(info.length * 1000)  # keep milliseconds
                     except Exception:
                         pass
 
@@ -191,18 +356,15 @@ class MusicScanner(QThread):
         return track
 
 
-# -----------------------
-# Music library (JSON DB)
-# -----------------------
 class MusicLibrary:
     def __init__(self, db_path='music_library.json'):
-        self.db_path = Path(db_path)
+        self.db_path = db_path
         self.tracks = []
         self.playlists = {}
         self.load_library()
 
     def load_library(self):
-        if self.db_path.exists():
+        if os.path.exists(self.db_path):
             try:
                 with open(self.db_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -232,7 +394,7 @@ class MusicLibrary:
             print(f"Error saving library: {e}")
 
     def add_track(self, track_info):
-        existing_ids = {t['id'] for t in self.tracks}
+        existing_ids = [t['id'] for t in self.tracks]
         if track_info['id'] not in existing_ids:
             self.tracks.append(track_info)
             if 'Recently Added' in self.playlists:
@@ -340,9 +502,6 @@ class MusicLibrary:
         return None
 
 
-# -----------------------
-# Main application window
-# -----------------------
 class MainWindow(QMainWindow):
     playlist_changed = Signal(str)
     library_updated = Signal()
@@ -354,13 +513,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.setWindowTitle("PlayerV")
         self.setMinimumSize(QSize(1100, 700))
-        
-        # Fix for Linux rendering - ensure proper window attributes
-        self.setAttribute(Qt.WA_NoSystemBackground, False)
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
-        # Restore geometry if available (safe)
         geom = self.settings.value("window_geometry", None)
         if geom:
             try:
@@ -368,9 +521,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # cross-platform music dir
-        self.music_dir = get_default_music_dir()
-        self.music_dir.mkdir(parents=True, exist_ok=True)
+        self.music_dir = 'music'
+        if not os.path.exists(self.music_dir):
+            os.makedirs(self.music_dir)
 
         self.library = MusicLibrary()
         self.current_playlist = []
@@ -380,111 +533,43 @@ class MainWindow(QMainWindow):
         self._is_playing = False
         self._current_duration = 0
 
-        self._progress_dragging = False
-        self._progress_last_update = 0
-
-        # choose audio engine
-        if _HAVE_VLC:
-            self.audio = AudioEngineVLC(self)
-            self._using_vlc = True
-        else:
-            self.audio = AudioEngineQt(self)
-            self._using_vlc = False
-
-        # connect signals
-        self.audio.position_changed.connect(self.update_progress)
-        try:
-            self.audio.duration_changed.connect(self.update_duration)
-        except Exception:
-            pass
-        self.audio.state_changed.connect(self.on_playback_state_changed_wrapper)
-        self.audio.end_of_media.connect(self._on_end_of_media)
-
-        self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(700)
-        self._poll_timer.timeout.connect(self._poll_audio_status)
-        self._poll_active = False
+        self.media_player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.media_player.setAudioOutput(self.audio_output)
+        self.media_player.positionChanged.connect(self.update_progress)
+        self.media_player.durationChanged.connect(self.update_duration)
+        self.media_player.mediaStatusChanged.connect(self.media_status_changed)
+        self.media_player.playbackStateChanged.connect(self.on_playback_state_changed)
 
         self._progress_style_updated = False
 
+        # Animation attributes
         self.frames_pause_to_play = []
         self.frames_play_to_pause = []
         self._animating = False
         self._anim_timer = None
         self._anim_index = 0
-        self._anim_interval_ms = 40
-        self._queued_state = None
-        self._processing_click = False
+        self._anim_interval_ms = 40  # frame duration ~25 FPS
+        self._queued_state = None  # 'play' or 'pause' if a click happened during animation
+        self._processing_click = False  # Prevent rapid repeated clicks
 
-        self._cover_cache = OrderedDict()
-        self._MAX_COVERS = 50
-
-        self._playlist_widgets = {}
-
-        # initialize UI
         self.init_ui()
         self.apply_theme()
         self.apply_settings()
 
+        # load animations AFTER ui is created (needs btn_play)
         self.load_play_pause_animations()
 
-        # scan on startup
         self.scan_music_library()
 
         self.show_page("home")
 
-    # -----------------------
-    # Polling helpers
-    # -----------------------
-    def _poll_audio_status(self):
-        try:
-            pos = self.audio.get_position()
-            dur = self.audio.get_duration()
-            if pos is not None and dur is not None:
-                self.update_progress(pos)
-                if dur and dur != self._current_duration:
-                    self.update_duration(dur)
-        except Exception as e:
-            print(f"Error in audio polling: {e}")
-
-    def _start_polling(self):
-        if not self._poll_active:
-            self._poll_active = True
-            self._poll_timer.start()
-
-    def _stop_polling(self):
-        if self._poll_active:
-            self._poll_active = False
-            self._poll_timer.stop()
-
-    def on_playback_state_changed_wrapper(self, state_str):
-        if state_str == 'playing':
-            self._is_playing = True
-            self._start_polling()
-            if not self._animating:
-                self._set_pause_icon_static()
-        elif state_str == 'paused':
-            self._is_playing = False
-            self._stop_polling()
-            if not self._animating:
-                self._set_play_icon_static()
-        elif state_str == 'stopped':
-            self._is_playing = False
-            self._stop_polling()
-            if not self._animating:
-                self._set_play_icon_static()
-            try:
-                self.progress_bar.setValue(0)
-            except Exception:
-                pass
-
-    # -----------------------
-    # Play/pause animation loading
-    # -----------------------
     def load_play_pause_animations(self):
-        icon_size = QSize(32, 32)
+        """Завантажує кадри з папок assets/pause-to-play і assets/play-to-pause.
+        Якщо кадри відсутні — використовує статичні іконки.
+        """
 
-        def load_dir_frames(folder, target_size):
+        def load_dir_frames(folder):
             frames = []
             if not os.path.isdir(folder):
                 return frames
@@ -494,25 +579,30 @@ class MainWindow(QMainWindow):
                 try:
                     pix = QPixmap(full)
                     if not pix.isNull():
-                        scaled_pix = pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                        frames.append(scaled_pix)
+                        frames.append(pix)
                 except Exception:
                     pass
             return frames
 
-        self.frames_pause_to_play = load_dir_frames(os.path.join('assets', 'pause-to-play'), icon_size)
-        self.frames_play_to_pause = load_dir_frames(os.path.join('assets', 'play-to-pause'), icon_size)
+        self.frames_pause_to_play = load_dir_frames(os.path.join('assets', 'pause-to-play'))
+        self.frames_play_to_pause = load_dir_frames(os.path.join('assets', 'play-to-pause'))
 
-        self.btn_play.setIconSize(icon_size)
+        # Ensure a reasonable icon size on the button
+        self.btn_play.setIconSize(QSize(28, 28))
 
-        if self._is_playing:
+        # Set initial static icon depending on current playback state
+        state = self.media_player.playbackState()
+        if state == QMediaPlayer.PlayingState:
             self._set_pause_icon_static()
         else:
             self._set_play_icon_static()
 
     def _set_play_icon_static(self):
+        # prefer final frame from pause_to_play if available
         if self.frames_pause_to_play:
-            self.btn_play.setIcon(QIcon(self.frames_pause_to_play[-1]))
+            pix = self.frames_pause_to_play[-1].scaled(self.btn_play.iconSize(), Qt.KeepAspectRatio,
+                                                       Qt.SmoothTransformation)
+            self.btn_play.setIcon(QIcon(pix))
         else:
             if os.path.exists('assets/play.png'):
                 self.btn_play.setIcon(QIcon('assets/play.png'))
@@ -521,7 +611,9 @@ class MainWindow(QMainWindow):
 
     def _set_pause_icon_static(self):
         if self.frames_play_to_pause:
-            self.btn_play.setIcon(QIcon(self.frames_play_to_pause[-1]))
+            pix = self.frames_play_to_pause[-1].scaled(self.btn_play.iconSize(), Qt.KeepAspectRatio,
+                                                       Qt.SmoothTransformation)
+            self.btn_play.setIcon(QIcon(pix))
         else:
             if os.path.exists('assets/pause.png'):
                 self.btn_play.setIcon(QIcon('assets/pause.png'))
@@ -529,11 +621,17 @@ class MainWindow(QMainWindow):
                 self.btn_play.setIcon(QIcon())
 
     def _animate_frames(self, frames, on_finished_static, direction='forward'):
+        """Play a list of QPixmap frames on the play button at fixed interval.
+        direction: 'forward' or 'reverse' to allow reversing a sequence when needed.
+        on_finished_static: callable to apply final static icon.
+        """
         if not frames:
             on_finished_static()
             return
 
+        # If already animating — queue desired final state and return
         if self._animating:
+            # Determine desired state
             desired_state = 'pause' if on_finished_static == self._set_pause_icon_static else 'play'
             self._queued_state = desired_state
             return
@@ -541,16 +639,20 @@ class MainWindow(QMainWindow):
         self._animating = True
         self._anim_index = 0
 
+        # Prepare frame list according to direction
         frame_list = frames if direction == 'forward' else list(reversed(frames))
 
+        # Show first frame immediately for instant feedback
         try:
             if frame_list:
-                self.btn_play.setIcon(QIcon(frame_list[0]))
+                pix = frame_list[0].scaled(self.btn_play.iconSize(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.btn_play.setIcon(QIcon(pix))
         except Exception:
             pass
 
         def on_frame():
             if self._anim_index >= len(frame_list):
+                # stop and finalize
                 if self._anim_timer:
                     try:
                         self._anim_timer.stop()
@@ -560,11 +662,13 @@ class MainWindow(QMainWindow):
 
                 self._animating = False
 
+                # Apply final static icon
                 try:
                     on_finished_static()
                 except Exception:
                     pass
 
+                # Check for queued state
                 if self._queued_state:
                     queued = self._queued_state
                     self._queued_state = None
@@ -573,31 +677,45 @@ class MainWindow(QMainWindow):
 
             try:
                 if self._anim_index < len(frame_list):
-                    self.btn_play.setIcon(QIcon(frame_list[self._anim_index]))
+                    pix = frame_list[self._anim_index].scaled(
+                        self.btn_play.iconSize(),
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    self.btn_play.setIcon(QIcon(pix))
             except Exception:
                 pass
 
             self._anim_index += 1
 
+        # Timer for frames
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(on_frame)
         self._anim_timer.start(self._anim_interval_ms)
 
     def _process_queued_state(self, state):
+        """Process queued state after current animation finishes."""
         if state == 'play':
-            if self._is_playing:
+            # Тільки якщо дійсно потрібно змінити на play
+            if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+                # Вже граємо, нічого не робимо
                 return
             self.animate_to_play()
         elif state == 'pause':
-            if not self._is_playing:
+            # Тільки якщо дійсно потрібно змінити на pause
+            if self.media_player.playbackState() == QMediaPlayer.PausedState:
+                # Вже на паузі, нічого не робимо
                 return
             self.animate_to_pause()
 
     def animate_to_play(self):
+        # play animation from pause -> play
         if self._animating:
+            # queue final desired state
             self._queued_state = 'play'
             return
 
+        # If there are no animation frames, just set static icon
         if not self.frames_pause_to_play and not self.frames_play_to_pause:
             self._set_play_icon_static()
             return
@@ -605,15 +723,18 @@ class MainWindow(QMainWindow):
         if self.frames_pause_to_play:
             self._animate_frames(self.frames_pause_to_play, self._set_play_icon_static, direction='forward')
         elif self.frames_play_to_pause:
+            # reverse play->pause to get pause->play visual
             self._animate_frames(self.frames_play_to_pause, self._set_play_icon_static, direction='reverse')
         else:
             self._set_play_icon_static()
 
     def animate_to_pause(self):
+        # play animation from play -> pause
         if self._animating:
             self._queued_state = 'pause'
             return
 
+        # If there are no animation frames, just set static icon
         if not self.frames_play_to_pause and not self.frames_pause_to_play:
             self._set_pause_icon_static()
             return
@@ -621,171 +742,42 @@ class MainWindow(QMainWindow):
         if self.frames_play_to_pause:
             self._animate_frames(self.frames_play_to_pause, self._set_pause_icon_static, direction='forward')
         elif self.frames_pause_to_play:
+            # reverse pause->play to get play->pause visual
             self._animate_frames(self.frames_pause_to_play, self._set_pause_icon_static, direction='reverse')
         else:
             self._set_pause_icon_static()
 
-    # -----------------------
-    # Progress bar mouse handling (supports Qt6 .position() and older .pos())
-    # -----------------------
-    def _progress_bar_mouse_press(self, event):
-        if event.button() == Qt.LeftButton:
-            self._progress_dragging = True
-            try:
-                self.progress_bar.set_dragging(True)
-            except Exception:
-                pass
-            self._handle_seek_event(event)
-            event.accept()
-        else:
-            QProgressBar.mousePressEvent(self.progress_bar, event)
-
-    def _progress_bar_mouse_release(self, event):
-        if event.button() == Qt.LeftButton:
-            self._progress_dragging = False
-            try:
-                self.progress_bar.set_dragging(False)
-            except Exception:
-                pass
-            self._handle_seek_event(event)
-            event.accept()
-        else:
-            QProgressBar.mouseReleaseEvent(self.progress_bar, event)
-
-    def _progress_bar_mouse_move(self, event):
-        if self._progress_dragging and (event.buttons() & Qt.LeftButton):
-            self._handle_seek_event(event)
-            event.accept()
-        else:
-            QProgressBar.mouseMoveEvent(self.progress_bar, event)
-
-    def _handle_seek_event(self, event):
-        if self._current_duration <= 0:
-            return
-
-        current_time = datetime.now().timestamp() * 1000
-
-        if current_time - self._progress_last_update < 33:
-            return
-
-        self._progress_last_update = current_time
-
-        # compatibility for different Qt mouse event APIs
-        if hasattr(event, "position"):
-            x = event.position().x()
-        else:
-            x = event.pos().x()
-
-        w = self.progress_bar.width()
-
-        if w <= 0:
-            return
-
-        pct = min(1.0, max(0.0, x / w))
-        seek_pos = int(pct * self._current_duration)
-
-        target_value = int(pct * (self.progress_bar.maximum() - self.progress_bar.minimum()))
-
-        if abs(self.progress_bar.value() - target_value) > 1:
-            self.progress_bar.setValue(target_value)
-            elapsed_seconds = int(seek_pos // 1000)
-            remaining_seconds = int((self._current_duration - seek_pos) // 1000) if self._current_duration > 0 else 0
-            self.time_elapsed_label.setText(self._format_time(elapsed_seconds))
-            self.time_remaining_label.setText(f"-{self._format_time(remaining_seconds)}")
-
-        try:
-            self.audio.set_position(seek_pos)
-        except Exception as e:
-            print(f"Error seeking: {e}")
-
-    # -----------------------
-    # UI build
-    # -----------------------
     def init_ui(self):
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(14, 14, 14, 14)
         central_layout.setSpacing(12)
 
-        # Upper bar
-        self.upper_bar = QFrame()
-        self.upper_bar.setObjectName("upperBar")
-        self.upper_bar.setFixedHeight(50)
-        upper_layout = QHBoxLayout(self.upper_bar)
-        upper_layout.setContentsMargins(16, 0, 16, 0)
-        upper_layout.setSpacing(0)
-
-        title_layout = QHBoxLayout()
-        title_layout.setSpacing(12)
-
-        app_icon_label = QLabel()
-        if os.path.exists("app_icon.png"):
-            icon_pixmap = QPixmap("app_icon.png").scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            app_icon_label.setPixmap(icon_pixmap)
-        else:
-            app_icon_label.setText("♫")
-            # choose font depending on platform
-            font_name = "Segoe UI" if platform.system() == "Windows" else "Sans Serif"
-            app_icon_label.setFont(QFont(font_name, 20))
-        app_icon_label.setFixedSize(32, 32)
-        title_layout.addWidget(app_icon_label)
-
-        app_title = QLabel("PlayerV")
-        font_name = "Segoe UI" if platform.system() == "Windows" else "Sans Serif"
-        app_title.setFont(QFont(font_name, 18, QFont.Weight.Bold))
-        app_title.setStyleSheet("color: #1DB954;")
-        title_layout.addWidget(app_title)
-
-        upper_layout.addLayout(title_layout)
-        upper_layout.addStretch()
-
-        self.btn_settings_top = QPushButton()
-        settings_icon = 'assets/settings.png' if os.path.exists('assets/settings.png') else ''
-        self.btn_settings_top.setIcon(QIcon(settings_icon))
-        self.btn_settings_top.setToolTip("Налаштування")
-        self.btn_settings_top.setFixedSize(40, 40)
-        self.btn_settings_top.setCursor(Qt.PointingHandCursor)
-        self.btn_settings_top.clicked.connect(lambda: self.show_page("settings"))
-        self.btn_settings_top.setStyleSheet("""
-            QPushButton {
-                background: rgba(255,255,255,10);
-                border: 1px solid rgba(255,255,255,15);
-                border-radius: 20px;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,20);
-                border-color: rgba(255,255,255,25);
-            }
-            QPushButton:pressed {
-                background: rgba(255,255,255,5);
-            }
-        """)
-        upper_layout.addWidget(self.btn_settings_top)
-
-        central_layout.addWidget(self.upper_bar)
-
-        # Main row: left playlist + pages
         row = QHBoxLayout()
         row.setSpacing(12)
 
         self.left_container = QFrame()
         self.left_container.setObjectName("leftPanel")
         self.left_container.setFixedWidth(320)
-        self.left_container.setAttribute(Qt.WA_TranslucentBackground)
-        self.left_container.setStyleSheet("background: transparent;")
         left_layout = QVBoxLayout(self.left_container)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
 
         left_title_layout = QHBoxLayout()
-        left_title = QLabel("playlist")
-        left_title.setFont(QFont(font_name, 14, QFont.Weight.Bold))
+        left_title = QLabel("Плейлисти")
+        left_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
         left_title_layout.addWidget(left_title)
 
-        self.btn_add_music = QPushButton("add music")
+        self.btn_add_music = QPushButton("+ Додати музику")
         self.btn_add_music.setFixedHeight(30)
         self.btn_add_music.clicked.connect(self.add_music_files)
         left_title_layout.addWidget(self.btn_add_music)
+
+        self.btn_refresh = QPushButton("🔄 Оновити")
+        self.btn_refresh.setFixedHeight(30)
+        self.btn_refresh.clicked.connect(self.refresh_library_and_playlists)
+        left_title_layout.addWidget(self.btn_refresh)
+
         left_layout.addLayout(left_title_layout)
 
         self.playlist_scroll_area = QScrollArea()
@@ -804,10 +796,11 @@ class MainWindow(QMainWindow):
         self.playlist_layout.setSpacing(10)
 
         self.playlist_scroll_area.setWidget(self.playlist_container)
+
         left_layout.addWidget(self.playlist_scroll_area)
+
         row.addWidget(self.left_container)
 
-        # Pages (home, playlists, settings)
         self.pages_container = QFrame()
         self.pages_container.setObjectName("pagesPanel")
         pages_layout = QVBoxLayout(self.pages_container)
@@ -815,7 +808,6 @@ class MainWindow(QMainWindow):
         pages_layout.setSpacing(8)
 
         self.pages = QStackedWidget()
-        # Note: HomePage, Playlist, SettingsPage should be implemented separately
         self.page_home = HomePage(self.settings, self.library, self)
         self.page_playlist_page = Playlist(self.settings, self.library, self)
         self.page_settings = SettingsPage(self.settings, self.apply_settings)
@@ -828,12 +820,20 @@ class MainWindow(QMainWindow):
 
         central_layout.addLayout(row)
 
-        # Bottom controls: progress + playback buttons
         self.bottom_container = QFrame()
         self.bottom_container.setObjectName("bottomPanel")
         bottom_layout = QHBoxLayout(self.bottom_container)
         bottom_layout.setContentsMargins(12, 8, 12, 8)
         bottom_layout.setSpacing(10)
+
+        self.current_track_info = QLabel("Виберіть трек")
+        self.current_track_info.setStyleSheet("""
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 5px;
+        """)
+        bottom_layout.addWidget(self.current_track_info, 1)
 
         progress_container = QWidget()
         progress_container.setFixedHeight(50)
@@ -852,18 +852,35 @@ class MainWindow(QMainWindow):
         """)
         progress_layout.addWidget(self.time_elapsed_label)
 
+        # Use custom painted progress bar
         self.progress_bar = RoundedProgressBar(height=14)
-        # default colors
         self.progress_bar.set_colors(QColor(60, 60, 60, 200),
                                      [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
 
-        # override mouse handlers
-        self.progress_bar.mousePressEvent = self._progress_bar_mouse_press
-        self.progress_bar.mouseReleaseEvent = self._progress_bar_mouse_release
-        self.progress_bar.mouseMoveEvent = self._progress_bar_mouse_move
-        self.progress_bar.setCursor(Qt.PointingHandCursor)
-        self.progress_bar.setMouseTracking(False)
+        # Override mouse events to seek media_player directly
+        def _mouse_press(event):
+            if event.button() == Qt.LeftButton and self._current_duration > 0:
+                # Qt6: event.position() is QPointF
+                x = event.position().x()
+                w = self.progress_bar.width()
+                pct = min(1.0, max(0.0, x / w)) if w > 0 else 0.0
+                seek_pos = int(pct * self._current_duration)
+                try:
+                    self.media_player.setPosition(seek_pos)
+                except Exception:
+                    pass
+                # Set internal progress for instant visual feedback
+                self.progress_bar.setValue(int(pct * (self.progress_bar.maximum() - self.progress_bar.minimum())))
+            QProgressBar.mousePressEvent(self.progress_bar, event)
 
+        def _mouse_move(event):
+            if event.buttons() & Qt.LeftButton:
+                _mouse_press(event)
+            QProgressBar.mouseMoveEvent(self.progress_bar, event)
+
+        self.progress_bar.mousePressEvent = _mouse_press
+        self.progress_bar.mouseMoveEvent = _mouse_move
+        self.progress_bar.setCursor(Qt.PointingHandCursor)
         progress_layout.addWidget(self.progress_bar, 1)
 
         self.time_remaining_label = QLabel("0:00")
@@ -882,21 +899,20 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.setSpacing(12)
 
-        # playback buttons
         self.btn_prev = QPushButton()
-        self.btn_prev.setIcon(QIcon('assets/back.png' if os.path.exists('assets/back.png') else ''))
+        self.btn_prev.setIcon(QIcon('assets/back.png'))
         self.btn_prev.setToolTip("Попередній трек")
 
         self.btn_play = QPushButton()
-        self.btn_play.setIcon(QIcon('assets/play.png' if os.path.exists('assets/play.png') else ''))
+        self.btn_play.setIcon(QIcon('assets/play.png'))
         self.btn_play.setToolTip("Відтворити/Пауза")
 
         self.btn_next = QPushButton()
-        self.btn_next.setIcon(QIcon('assets/next.png' if os.path.exists('assets/next.png') else ''))
+        self.btn_next.setIcon(QIcon('assets/next.png'))
         self.btn_next.setToolTip("Наступний трек")
 
         self.btn_loop = QPushButton()
-        self.btn_loop.setIcon(QIcon('assets/loop.png' if os.path.exists('assets/loop.png') else ''))
+        self.btn_loop.setIcon(QIcon('assets/loop.png'))
         self.btn_loop.setToolTip("Увімкнути/вимкнути цикл")
         self.btn_loop.setCheckable(True)
         self._loop_enabled = False
@@ -941,29 +957,19 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self.build_stylesheet())
         self.update_playlist_panel()
 
-        # connect signals for pages
         self.playlist_changed.connect(self.page_home.on_playlist_changed)
         self.library_updated.connect(self.page_home.refresh_library)
         self.library_updated.connect(self.update_playlist_panel)
 
         self.progress_updated.connect(self._on_progress_updated)
 
-    # -----------------------
-    # Stylesheet
-    # -----------------------
     def build_stylesheet(self) -> str:
         return """
         QWidget {
-            background-color: #121212;
+            background: rgba(18, 18, 18, 255);
             color: #e8e8e8;
             font-family: "Segoe UI", "Arial", sans-serif;
             font-size: 12px;
-        }
-
-        QFrame#upperBar {
-            background: rgba(24,24,26,220);
-            border-radius: 16px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }
 
         QFrame#leftPanel {
@@ -979,7 +985,7 @@ class MainWindow(QMainWindow):
             border-radius: 16px;
         }
         QWidget#playlistContainer {
-            background-color: #121212;
+            background: rgba(24, 24, 26, 180);
         }
 
         QProgressBar {
@@ -1000,7 +1006,7 @@ class MainWindow(QMainWindow):
         }
 
         QScrollArea {
-            background-color: #121212;
+            background: rgba(24, 24, 26, 180);
             border: none;
             outline: none;
         }
@@ -1034,9 +1040,6 @@ class MainWindow(QMainWindow):
         }
         """
 
-    # -----------------------
-    # Library scanning
-    # -----------------------
     def scan_music_library(self):
         self.scanner = MusicScanner(self.music_dir)
         self.scanner.scan_complete.connect(self.on_scan_complete)
@@ -1048,110 +1051,54 @@ class MainWindow(QMainWindow):
         self.update_playlist_panel()
         self.library_updated.emit()
 
-    # -----------------------
-    # Add files (copy to music dir)
-    # -----------------------
     def add_music_files(self):
-        start_dir = str(self.music_dir) if self.music_dir.exists() else str(Path.home())
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Виберіть музичні файли",
-            start_dir,
+            "",
             "Музичні файли (*.mp3 *.wav *.flac *.ogg *.m4a *.aac)"
         )
 
         if files:
-            added = 0
             for file_path in files:
                 try:
-                    src = Path(file_path)
-                    dest_path = self.music_dir / src.name
-                    if dest_path.exists():
-                        name, ext = os.path.splitext(src.name)
+                    dest_path = os.path.join(self.music_dir, os.path.basename(file_path))
+                    if os.path.exists(dest_path):
+                        name, ext = os.path.splitext(os.path.basename(file_path))
                         counter = 1
-                        while dest_path.exists():
-                            dest_path = self.music_dir / f"{name}_{counter}{ext}"
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(self.music_dir, f"{name}_{counter}{ext}")
                             counter += 1
 
-                    shutil.copy2(str(src), str(dest_path))
+                    shutil.copy2(file_path, dest_path)
 
                     scanner = MusicScanner(self.music_dir)
                     track_info = scanner.extract_track_info(dest_path)
                     if self.library.add_track(track_info):
-                        added += 1
-                        print(f"Added: {track_info['title']}")
+                        print(f"Додано: {track_info['title']}")
 
                 except Exception as e:
                     QMessageBox.warning(self, "Помилка", f"Не вдалося додати файл: {e}")
 
-            if added > 0:
-                self.update_playlist_panel()
-                self.library_updated.emit()
+            self.update_playlist_panel()
+            self.library_updated.emit()
             QMessageBox.information(self, "Файли додано",
                                     f"Додано {len(files)} файлів у бібліотеку")
 
-    # -----------------------
-    # Playlist panel update
-    # -----------------------
     def update_playlist_panel(self):
+        while self.playlist_layout.count():
+            child = self.playlist_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
         playlists = self.library.playlists
-
-        existing_widgets = {}
-        for i in range(self.playlist_layout.count()):
-            item = self.playlist_layout.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), PlaylistItem):
-                widget = item.widget()
-                existing_widgets[widget.playlist_name] = widget
-
-        # remove widgets for deleted playlists
-        for playlist_name in list(existing_widgets.keys()):
-            if playlist_name not in playlists:
-                widget = existing_widgets.pop(playlist_name)
-                widget.deleteLater()
-
-        # add/update playlists
         for playlist_name, track_ids in playlists.items():
             tracks = self.library.get_playlist_tracks(playlist_name)
-
-            if playlist_name in existing_widgets:
-                widget = existing_widgets[playlist_name]
-                widget.tracks = tracks
-                widget.update_collage()
-                # update count label if present
-                for i in range(widget.layout().count()):
-                    item = widget.layout().itemAt(i)
-                    if isinstance(item, QVBoxLayout):
-                        for j in range(item.count()):
-                            child = item.itemAt(j)
-                            if child and child.widget() and isinstance(child.widget(), QLabel):
-                                label = child.widget()
-                                # best-effort, do not crash if label text differs
-                                if "track" in label.text().lower():
-                                    track_count = len(tracks)
-                                    label.setText(f"{track_count} track{'s' if track_count != 1 else ''}")
-                                    break
-            else:
-                playlist_item = PlaylistItem(playlist_name, tracks, self.library)
-                playlist_item.playlist_clicked.connect(self.on_playlist_clicked)
-                self.playlist_layout.addWidget(playlist_item)
-                playlist_item.update_collage()
-
-        # maintain order
-        for i, (playlist_name, _) in enumerate(playlists.items()):
-            for j in range(self.playlist_layout.count()):
-                item = self.playlist_layout.itemAt(j)
-                if item and item.widget() and isinstance(item.widget(), PlaylistItem):
-                    if item.widget().playlist_name == playlist_name and i != j:
-                        widget = item.widget()
-                        self.playlist_layout.removeWidget(widget)
-                        self.playlist_layout.insertWidget(i, widget)
-                        break
-
+            playlist_item = PlaylistItem(playlist_name, tracks, self.library)
+            playlist_item.playlist_clicked.connect(self.on_playlist_clicked)
+            self.playlist_layout.addWidget(playlist_item)
         self.playlist_layout.addStretch()
 
-    # -----------------------
-    # Playlist interactions
-    # -----------------------
     def on_playlist_clicked(self, playlist_name, tracks):
         self.current_playlist_name = playlist_name
         self.current_playlist = tracks
@@ -1159,9 +1106,11 @@ class MainWindow(QMainWindow):
         self.update_playlist_selection()
         self.playlist_changed.emit(playlist_name)
 
-        was_playing = self._is_playing
+        # Визначаємо, чи грає плеєр зараз
+        was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
 
         if self.current_playlist:
+            # Якщо плеєр вже грає, не анімуємо
             self.play_track(self.current_playlist[0], should_animate=not was_playing)
 
     def update_playlist_selection(self):
@@ -1241,57 +1190,74 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Помилка", "Не вдалося видалити плейлист")
 
-    # -----------------------
-    # Playback / progress
-    # -----------------------
-    def update_progress(self, position):
-        if self._progress_dragging:
+    def _progress_bar_clicked(self, event):
+        if event.button() == Qt.LeftButton and self._current_duration > 0:
+            click_x = event.position().x()
+            progress_width = self.progress_bar.width()
+            percentage = min(1.0, max(0.0, click_x / progress_width)) if progress_width > 0 else 0.0
+            seek_position = int(percentage * self._current_duration)
+            self.media_player.setPosition(seek_position)
+            target_value = int(percentage * 1000)
+            self.progress_bar.setValue(target_value)
+            self.update_progress(seek_position)
+
+    def _progress_bar_mouse_move(self, event):
+        if event.buttons() & Qt.LeftButton:
+            self._progress_bar_clicked(event)
+
+    def on_playback_state_changed(self, state):
+        # Не перебивати анімацію, якщо вона йде
+        if self._animating:
             return
 
+        if state == QMediaPlayer.PlayingState:
+            self._is_playing = True
+            # Тільки якщо не анімуємо - встановити статичну іконку
+            if not self._animating:
+                self._set_pause_icon_static()
+            if self.current_playlist and self.current_track_index >= 0:
+                track = self.current_playlist[self.current_track_index]
+                self.current_track_info.setText(f"{track['title']} - {track['artist']}")
+        elif state == QMediaPlayer.PausedState:
+            self._is_playing = False
+            if not self._animating:
+                self._set_play_icon_static()
+        elif state == QMediaPlayer.StoppedState:
+            self._is_playing = False
+            if not self._animating:
+                self._set_play_icon_static()
+            self.progress_bar.setValue(0)
+
+    def update_progress(self, position):
         if self._current_duration > 0:
+            # position may be milliseconds
             percentage = (position / self._current_duration) * 1000 if self._current_duration > 0 else 0
-            current_value = self.progress_bar.value()
-            if abs(current_value - percentage) > 1:
+            self.progress_bar.setValue(int(percentage))
+            elapsed_seconds = int(position // 1000)
+            remaining_seconds = int((self._current_duration - position) // 1000) if self._current_duration > 0 else 0
+            self.time_elapsed_label.setText(self._format_time(elapsed_seconds))
+            self.time_remaining_label.setText(f"-{self._format_time(remaining_seconds)}")
+            self.progress_updated.emit(
+                int((position / self._current_duration) * 100) if self._current_duration > 0 else 0)
+            if position > 0 and not self._progress_style_updated:
+                self._progress_style_updated = True
                 try:
-                    self.progress_bar.setValue(int(percentage))
+                    self.progress_bar.update()
                 except Exception:
                     pass
-                elapsed_seconds = int(position // 1000)
-                remaining_seconds = int(
-                    (self._current_duration - position) // 1000) if self._current_duration > 0 else 0
-                self.time_elapsed_label.setText(self._format_time(elapsed_seconds))
-                self.time_remaining_label.setText(f"-{self._format_time(remaining_seconds)}")
-                self.progress_updated.emit(
-                    int((position / self._current_duration) * 100) if self._current_duration > 0 else 0)
-                if position > 0 and not self._progress_style_updated:
-                    self._progress_style_updated = True
-                    try:
-                        self.progress_bar.update()
-                    except Exception:
-                        pass
         else:
-            try:
-                if self.progress_bar.value() != 0:
-                    self.progress_bar.setValue(0)
-                    self.time_elapsed_label.setText("0:00")
-                    self.time_remaining_label.setText("0:00")
-            except Exception:
-                pass
+            self.progress_bar.setValue(0)
+            self.time_elapsed_label.setText("0:00")
+            self.time_remaining_label.setText("0:00")
 
     def update_duration(self, duration):
-        if duration != self._current_duration:
-            self._current_duration = duration
-            if duration > 0:
-                try:
-                    self.progress_bar.setValue(0)
-                    self._progress_style_updated = False
-                except Exception:
-                    pass
-            else:
-                try:
-                    self.progress_bar.setValue(0)
-                except Exception:
-                    pass
+        # duration may be milliseconds
+        self._current_duration = duration
+        if duration > 0:
+            self.progress_bar.setValue(0)
+            self._progress_style_updated = False
+        else:
+            self.progress_bar.setValue(0)
 
     def _format_time(self, seconds):
         hours = seconds // 3600
@@ -1306,88 +1272,110 @@ class MainWindow(QMainWindow):
         pass
 
     def play_track_by_id(self, track_id, should_animate=None):
-        """Play by id with optional animation control"""
+        """Відтворює трек за ID з можливістю контролю анімації
+
+        Args:
+            track_id: ID трека для відтворення
+            should_animate: Якщо None - автоматично визначає чи потрібна анімація
+                           Якщо True - завжди анімує
+                           Якщо False - ніколи не анімує
+        """
         track = self.library.get_track_by_id(track_id)
         if track:
+            # Шукаємо трек в поточному плейлисті
             for i, t in enumerate(self.current_playlist):
                 if t['id'] == track_id:
                     self.current_track_index = i
                     break
             else:
+                # Якщо трек не знайдено в поточному плейлисті, додаємо його
                 self.current_track_index = len(self.current_playlist)
                 self.current_playlist.append(track)
 
+            # Якщо should_animate не вказано, визначаємо автоматично
             if should_animate is None:
-                should_animate = not self._is_playing
+                # Анімуємо тільки якщо плеєр не грає
+                should_animate = not (self.media_player.playbackState() == QMediaPlayer.PlayingState)
 
             self.play_track(track, should_animate)
 
     def play_track(self, track, should_animate=None):
-        """Play a track with optional animation."""
+        """Play a track with optional animation.
+
+        Args:
+            track: Track to play
+            should_animate: Якщо None - автоматично визначає
+                           Якщо True - завжди анімує
+                           Якщо False - ніколи не анімує
+        """
         self._progress_style_updated = False
-        file_path = track['file_path']
-        try:
-            self.audio.set_source(file_path)
-        except Exception as e:
-            print("Error setting source:", e)
+        file_url = QUrl.fromLocalFile(track['file_path'])
+        self.media_player.setSource(file_url)
+        self.progress_bar.setValue(0)
 
-        try:
-            self.progress_bar.setValue(0)
-        except Exception:
-            pass
+        # Отримуємо поточний стан перед відтворенням
+        current_state = self.media_player.playbackState()
+        self.media_player.play()
 
-        current_state_was_playing = self._is_playing
+        self.current_track_info.setText(f"{track['title']} - {track['artist']}")
 
-        try:
-            self.audio.play()
-        except Exception as e:
-            print("Error audio.play():", e)
-
-
+        # Якщо should_animate не вказано, визначаємо автоматично
         if should_animate is None:
-            should_animate = not current_state_was_playing
+            # Анімуємо тільки якщо плеєр не грає
+            should_animate = not (current_state == QMediaPlayer.PlayingState)
 
-        if current_state_was_playing:
-            pass
+        # Ключова логіка: якщо трек вже грає - не міняємо іконку
+        # Якщо трек не грає - анімуємо тільки якщо should_animate == True
+        if current_state == QMediaPlayer.PlayingState:
+            # Якщо вже граємо, НЕ міняємо іконку взагалі
+            pass  # Не робимо нічого, іконка залишається пауза
         else:
+            # Якщо не граємо, анімуємо або ставимо статичну іконку
             if should_animate:
                 self.animate_to_pause()
             else:
                 self._set_pause_icon_static()
 
         self._is_playing = True
-        self._start_polling()
         self.library.increment_play_count(track['id'])
         self.library_updated.emit()
 
     def media_status_changed(self, status):
-        pass
-
-    def _on_end_of_media(self):
         try:
-            if self._loop_enabled and self.current_playlist and self.current_track_index >= 0:
-                was_playing = self._is_playing
-                QTimer.singleShot(100, lambda: self.play_track(
-                    self.current_playlist[self.current_track_index],
-                    should_animate=not was_playing
-                ))
-            elif not self._loop_enabled:
-                was_playing = self._is_playing
-                QTimer.singleShot(100, lambda: self.on_next_auto(was_playing))
+            # Use MediaStatus enum consistently
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                if self._loop_enabled and self.current_playlist and self.current_track_index >= 0:
+                    # Small delay before replaying
+                    was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
+                    QTimer.singleShot(100, lambda: self.play_track(
+                        self.current_playlist[self.current_track_index],
+                        should_animate=not was_playing
+                    ))
+                elif not self._loop_enabled:
+                    was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
+                    QTimer.singleShot(100, lambda: self.on_next_auto(was_playing))
         except Exception as e:
-            print("Error in _on_end_of_media:", e)
+            print(f"Error in media_status_changed: {e}")
 
     def on_next_auto(self, was_playing):
-        """Automatically advance to the next track"""
+        """Автоматичний перехід на наступний трек (викликається після закінчення треку)"""
         if self._animating:
             return
 
         if self.current_playlist:
             self.current_track_index = (self.current_track_index + 1) % len(self.current_playlist)
+            # Якщо трек вже грає, не анімуємо зміну іконки
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def toggle_loop(self, checked):
         self._loop_enabled = checked
+
+    def refresh_library_and_playlists(self):
+        self.btn_refresh.setEnabled(False)
+        self.btn_refresh.setText("Оновлення...")
+        scanner = MusicScanner(self.music_dir)
+        scanner.scan_complete.connect(self._on_refresh_complete)
+        scanner.start()
 
     def _on_refresh_complete(self, music_data):
         self.library.tracks.clear()
@@ -1395,27 +1383,29 @@ class MainWindow(QMainWindow):
             self.library.add_track(track)
         self.update_playlist_panel()
         self.library_updated.emit()
-        try:
-            self.btn_refresh.setEnabled(True)
-            self.btn_refresh.setText("🔄 Оновити")
-        except Exception:
-            pass
+        self.btn_refresh.setEnabled(True)
+        self.btn_refresh.setText("🔄 Оновити")
         QMessageBox.information(self, "Оновлено", "Музичну бібліотеку та плейлисти оновлено!")
 
     def on_play_pause(self):
         if self._animating:
-            desired_state = 'pause' if self._is_playing else 'play'
+            # Determine desired state based on current playback state
+            state = self.media_player.playbackState()
+            desired_state = 'pause' if state == QMediaPlayer.PlayingState else 'play'
             self._queued_state = desired_state
             return
 
-        if self._is_playing:
-            try:
-                self.audio.pause()
-            except Exception:
-                pass
+        state = self.media_player.playbackState()
+        if state == QMediaPlayer.PlayingState:
+            self.media_player.pause()
+            # animate pause -> play
             self.animate_to_play()
             self._is_playing = False
-            self._stop_polling()
+        elif state == QMediaPlayer.PausedState:
+            self.media_player.play()
+            # animate play -> pause
+            self.animate_to_pause()
+            self._is_playing = True
         else:
             if self.current_playlist and self.current_track_index >= 0:
                 self.play_track(self.current_playlist[self.current_track_index])
@@ -1430,8 +1420,10 @@ class MainWindow(QMainWindow):
             return
 
         if self.current_playlist:
-            was_playing = self._is_playing
+            # Визначаємо, чи грає плеєр зараз
+            was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
             self.current_track_index = (self.current_track_index - 1) % len(self.current_playlist)
+            # Якщо трек вже грає, не анімуємо зміну іконки
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def on_next(self):
@@ -1439,13 +1431,16 @@ class MainWindow(QMainWindow):
             return
 
         if self.current_playlist:
-            was_playing = self._is_playing
+            # Визначаємо, чи грає плеєр зараз
+            was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
             self.current_track_index = (self.current_track_index + 1) % len(self.current_playlist)
+            # Якщо трек вже грає, не анімуємо зміну іконки
             self.play_track(self.current_playlist[self.current_track_index], should_animate=not was_playing)
 
     def on_track_double_clicked(self, track_id):
-        """Double-click handler from a track list"""
-        was_playing = self._is_playing
+        """Викликається при подвійному кліку на трек у списку"""
+        # Визначаємо, чи грає плеєр зараз
+        was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
         self.play_track_by_id(track_id, should_animate=not was_playing)
 
     def update_progress_bar_theme(self, theme="default"):
@@ -1460,7 +1455,6 @@ class MainWindow(QMainWindow):
                 self.progress_bar.set_colors(QColor(60, 60, 60, 200),
                                              [QColor(29, 185, 84), QColor(35, 200, 95), QColor(29, 185, 84)])
         else:
-            # fallback CSS styling
             if theme == "dark":
                 self.progress_bar.setStyleSheet("""
                     QProgressBar {
@@ -1507,9 +1501,6 @@ class MainWindow(QMainWindow):
                     }
                 """)
 
-    # -----------------------
-    # Theme / apply settings
-    # -----------------------
     def apply_theme(self):
         theme = self.settings.value("theme", "dark", type=str)
         pal = QPalette()
@@ -1550,12 +1541,10 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event):
+        # Stop all animations
         if self._anim_timer:
             self._anim_timer.stop()
             self._anim_timer = None
-
-        self._cover_cache.clear()
-        self._playlist_widgets.clear()
 
         try:
             self.settings.setValue("window_geometry", self.saveGeometry())
@@ -1568,27 +1557,22 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        try:
-            self.audio.stop()
-        except Exception:
-            pass
+        # Stop media player
+        if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+            self.media_player.stop()
 
         super().closeEvent(event)
 
 
-# -----------------------
-# Main entry
-# -----------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     if os.path.exists("app_icon.png"):
         app.setWindowIcon(QIcon("app_icon.png"))
 
-    # ensure folders exist
-    Path('covers').mkdir(exist_ok=True)
-    Path('assets').mkdir(exist_ok=True)
-    # music dir created by get_default_music_dir in MainWindow
+    os.makedirs('music', exist_ok=True)
+    os.makedirs('covers', exist_ok=True)
+    os.makedirs('assets', exist_ok=True)
 
     win = MainWindow()
     win.show()
