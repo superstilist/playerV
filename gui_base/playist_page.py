@@ -263,7 +263,7 @@ class Playlist(QWidget):
         text_layout = QVBoxLayout()
         name_label = QLabel(playlist["name"])
         name_label.setFont(QFont("Arial", 12, QFont.Bold))
-        name_label.setStyleSheet("color: white;")
+        name_label.setStyleSheet("color: white; background-color: rgba(40, 40, 40, 180); border-radius: 15px; padding: 8px 12px;")
         text_layout.addWidget(name_label)
 
         # Отримуємо кількість треків з основної бібліотеки
@@ -276,7 +276,7 @@ class Playlist(QWidget):
 
         count_label = QLabel(f"{track_count} tracks")
         count_label.setFont(QFont("Arial", 10))
-        count_label.setStyleSheet("color: #b3b3b3;")
+        count_label.setStyleSheet("color: #b3b3b3; background-color: rgba(40, 40, 40, 180); border-radius: 15px; padding: 6px 12px;")
         text_layout.addWidget(count_label)
 
         layout.addLayout(text_layout)
